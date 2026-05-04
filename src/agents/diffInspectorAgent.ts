@@ -10,6 +10,7 @@ import {
 } from '../state/workspaceState.js';
 import { getGitDiff, getGitStatus, GitStatus } from '../tools/gitTool.js';
 import { getRunPaths, saveComponentArtifact } from '../workflow/checkpoint.js';
+import { resolveComponentPathFromState } from '../tools/resolvePath.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('DiffInspectorAgent');
@@ -33,11 +34,6 @@ export function createDiffInspectorAgent(): (
 
     const { workspace, componentStates } = state;
 
-    // Resolve workspace root from baseDir (parent of .sea directory)
-    const workspaceRoot = state.baseDir
-      ? path.resolve(state.baseDir, '..')
-      : process.cwd();
-
     const updatedComponentStates = { ...(componentStates || {}) };
     const allViolations: string[] = [];
 
@@ -50,10 +46,8 @@ export function createDiffInspectorAgent(): (
       const component = workspace.components?.find(c => c.name === componentName);
       if (!component) continue;
 
-      // Resolve component path relative to workspace root
-      const resolvedComponentPath = path.isAbsolute(component.path)
-        ? component.path
-        : path.resolve(workspaceRoot, component.path);
+      // Resolve component path using centralized resolver
+      const resolvedComponentPath = resolveComponentPathFromState(state, component);
 
       const result = await inspectComponentDiff(
         state.runId,

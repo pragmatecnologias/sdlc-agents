@@ -28,6 +28,7 @@ import {
 } from '../tools/gitTool.js';
 import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
 import { runCommand } from '../tools/commandRunner.js';
+import { resolveComponentPathFromState, getWorkspaceRoot } from '../tools/resolvePath.js';
 
 const logger = createLogger('CLI');
 
@@ -540,11 +541,8 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     state.componentStates[component] = componentState;
   }
 
-  // Resolve component path relative to workspace root (parent of .sea directory)
-  const workspaceRoot = state.baseDir ? path.dirname(state.baseDir) : path.dirname(baseDir);
-  const componentPath = path.isAbsolute(componentConfig.path)
-    ? componentConfig.path
-    : path.resolve(workspaceRoot, componentConfig.path);
+  // Resolve component path using centralized resolver
+  const componentPath = resolveComponentPathFromState(state, componentConfig);
 
   const runPaths = getRunPaths(runId, baseDir);
   const componentDir = path.join(runPaths.componentsDir, component);
@@ -589,13 +587,22 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
   console.log(`  Git status saved to: ${statusPath}`);
 
   // 5. Validate paths
+  // allowedPaths comes from the component plan, not from protectedPaths
+  const planAllowedPaths = componentState.plan?.allowedPaths || [];
+  const planProtectedPaths = componentState.plan?.protectedPaths || [];
+  const planForbiddenPaths = componentState.plan?.forbiddenPaths || [];
+
   const pathPolicy: PathPolicy = {
-    allowedPaths: componentConfig.protectedPaths || [],
+    allowedPaths: planAllowedPaths.length > 0
+      ? planAllowedPaths
+      : [componentConfig.path],
     protectedPaths: [
+      ...planProtectedPaths,
       ...(componentConfig.protectedPaths || []),
       ...(state.workspace.globalProtectedPaths || []),
     ],
     forbiddenPaths: [
+      ...planForbiddenPaths,
       ...(componentConfig.forbiddenPaths || []),
     ],
   };
@@ -681,8 +688,6 @@ async function handleVerify(runId: string, workspacePath?: string): Promise<void
     process.exit(1);
   }
 
-  const runPaths = getRunPaths(runId, baseDir);
-
   // Find components that need verification
   const componentsToVerify = Object.entries(state.componentStates)
     .filter(([, cs]) => cs.changeRole === 'modify' || cs.changeRole === 'verify_only');
@@ -694,141 +699,49 @@ async function handleVerify(runId: string, workspacePath?: string): Promise<void
 
   console.log(`Verifying ${componentsToVerify.length} component(s) for run ${runId}\n`);
 
-  const verificationSummary: VerificationSummary = {
-    overallStatus: 'passed',
-    componentResults: {},
-    totalCommandsRun: 0,
-    totalPassed: 0,
-    totalFailed: 0,
-    testsRun: false,
-    buildsRun: false,
-  };
+  // Use the same verification agent as the workflow
+  const agents = createSeaAgents({
+    memoryPath: state.workspace.memory?.path || path.join(baseDir, 'engineering_memory.md'),
+  });
 
-  for (const [componentName, componentState] of componentsToVerify) {
-    console.log(`--- Verifying: ${componentName} ---`);
+  const result = await agents.verificationAgent(state);
 
-    // Find component config for commands
-    const componentConfig = state.workspace.components.find(
-      (c: ComponentConfig) => c.name === componentName
-    );
-
-    if (!componentConfig) {
-      console.log(`  [warn] No component config found, skipping`);
-      continue;
-    }
-
-    const commands = componentConfig.commands;
-    if (!commands) {
-      console.log(`  [warn] No commands configured, skipping`);
-      continue;
-    }
-
-    const workspaceRoot = state.baseDir ? path.resolve(state.baseDir, '..') : process.cwd();
-    const componentPath = path.isAbsolute(componentConfig.path)
-      ? componentConfig.path
-      : path.resolve(workspaceRoot, componentConfig.path);
-    const componentDir = path.join(runPaths.componentsDir, componentName);
-    await fs.mkdir(componentDir, { recursive: true });
-
-    // Build list of verification commands in order
-    const verificationCommands: Array<{ label: string; cmd: string }> = [];
-    if (commands.install) verificationCommands.push({ label: 'install', cmd: commands.install });
-    if (commands.lint) verificationCommands.push({ label: 'lint', cmd: commands.lint });
-    if (commands.typecheck) verificationCommands.push({ label: 'typecheck', cmd: commands.typecheck });
-    if (commands.test) verificationCommands.push({ label: 'test', cmd: commands.test });
-    if (commands.build) verificationCommands.push({ label: 'build', cmd: commands.build });
-
-    let commandsRun = 0;
-    let commandsPassed = 0;
-    let commandsFailed = 0;
-    const commandResults: CommandResult[] = [];
-
-    for (const { label, cmd } of verificationCommands) {
-      console.log(`  Running ${label}: ${cmd}`);
-      try {
-        const result = await runCommand(cmd, {
-          cwd: componentPath,
-          autoSave: true,
-          saveDir: componentDir,
-          timeout: 300000, // 5 minutes
-          continueOnError: () => true,
-        });
-
-        commandsRun++;
-        commandResults.push(result);
-
-        if (result.status === 'passed') {
-          commandsPassed++;
-          console.log(`    [pass] ${label} (${result.durationMs}ms)`);
-        } else {
-          commandsFailed++;
-          console.log(`    [fail] ${label} (${result.durationMs}ms)`);
-          if (result.stderr) {
-            const firstLines = result.stderr.split('\n').slice(0, 5).join('\n    ');
-            console.log(`    stderr: ${firstLines}`);
-          }
-        }
-
-        if (label === 'test') verificationSummary.testsRun = true;
-        if (label === 'build') verificationSummary.buildsRun = true;
-      } catch (error) {
-        commandsRun++;
-        commandsFailed++;
-        console.log(`    [error] ${label}: ${error}`);
-      }
-    }
-
-    const componentStatus = commandsFailed === 0 ? 'passed' : commandsRun === 0 ? 'skipped' : 'failed';
-    verificationSummary.componentResults[componentName] = {
-      status: componentStatus,
-      commandsRun,
-      commandsPassed,
-      commandsFailed,
-    };
-    verificationSummary.totalCommandsRun += commandsRun;
-    verificationSummary.totalPassed += commandsPassed;
-    verificationSummary.totalFailed += commandsFailed;
-
-    // Update component state with command results
-    state.componentStates[componentName] = {
-      ...componentState,
-      commandResults,
-      componentDecision: componentStatus === 'passed' ? 'verified' : 'needs_fix',
-    };
-
-    console.log(`  Result: ${componentStatus} (${commandsPassed}/${commandsRun} passed)`);
-    console.log();
+  // Merge result into state
+  if (result.verification) {
+    state.verification = result.verification;
   }
-
-  // Determine overall status
-  if (verificationSummary.totalFailed > 0) {
-    verificationSummary.overallStatus = verificationSummary.totalPassed > 0 ? 'partial' : 'failed';
+  if (result.componentStates) {
+    state.componentStates = { ...state.componentStates, ...result.componentStates };
   }
-
-  // Update state
-  state.verification = verificationSummary;
-  state.runStatus = verificationSummary.overallStatus === 'passed' ? 'verifying' : state.runStatus;
   await saveState(state, baseDir);
 
-  // Print verification summary
-  console.log(`=== Verification Summary ===`);
-  console.log(`  Overall:      ${verificationSummary.overallStatus}`);
-  console.log(`  Commands run: ${verificationSummary.totalCommandsRun}`);
-  console.log(`  Passed:       ${verificationSummary.totalPassed}`);
-  console.log(`  Failed:       ${verificationSummary.totalFailed}`);
-  console.log(`  Tests run:    ${verificationSummary.testsRun ? 'yes' : 'no'}`);
-  console.log(`  Builds run:   ${verificationSummary.buildsRun ? 'yes' : 'no'}`);
+  const summary = state.verification!;
 
-  if (verificationSummary.totalFailed > 0) {
+  // Print verification results per component
+  for (const [componentName, compResult] of Object.entries(summary.componentResults)) {
+    console.log(`--- ${componentName}: ${compResult.status} ---`);
+    console.log(`  Commands: ${compResult.commandsRun} run, ${compResult.commandsPassed} passed, ${compResult.commandsFailed} failed`);
+  }
+
+  // Print verification summary
+  console.log(`\n=== Verification Summary ===`);
+  console.log(`  Overall:      ${summary.overallStatus}`);
+  console.log(`  Commands run: ${summary.totalCommandsRun}`);
+  console.log(`  Passed:       ${summary.totalPassed}`);
+  console.log(`  Failed:       ${summary.totalFailed}`);
+  console.log(`  Tests run:    ${summary.testsRun ? 'yes' : 'no'}`);
+  console.log(`  Builds run:   ${summary.buildsRun ? 'yes' : 'no'}`);
+
+  if (summary.totalFailed > 0) {
     console.log(`\nComponents with failures:`);
-    for (const [name, result] of Object.entries(verificationSummary.componentResults)) {
+    for (const [name, result] of Object.entries(summary.componentResults)) {
       if (result.status === 'failed') {
         console.log(`  - ${name}: ${result.commandsFailed}/${result.commandsRun} failed`);
       }
     }
   }
 
-  if (verificationSummary.overallStatus === 'passed') {
+  if (summary.overallStatus === 'passed') {
     console.log(`\nNext: sea report ${runId}`);
   }
 }
@@ -909,58 +822,153 @@ async function handleReport(runId: string, workspacePath?: string): Promise<void
     const statePath = path.join(baseDir, 'runs', runId, 'state.json');
 
     const stateContent = await fs.readFile(statePath, 'utf-8');
-    const state = JSON.parse(stateContent) as {
-      userRequest?: string;
-      finalDecision?: { decision: string; summary: string; requiredFixes?: string[]; warnings?: string[] };
-      brutalRealityCheck?: { score: number; real?: string[]; partial?: string[]; fakeOrUnverified?: string[]; missing?: string[] };
-      componentStates?: Record<string, { componentDecision: string; changedFiles?: string[] }>;
-      verification?: { overallStatus: string; totalCommandsRun: number; totalPassed: number; totalFailed: number };
-    };
+    const state = JSON.parse(stateContent) as WorkspaceState;
+
+    const runPaths = getRunPaths(runId, baseDir);
 
     console.log(`\n=========================================`);
     console.log(`  SEA Run Report: ${runId}`);
     console.log(`=========================================\n`);
 
-    if (state.userRequest) {
-      console.log(`Request: ${state.userRequest}`);
+    // Run status and request
+    console.log(`Status:     ${state.runStatus || 'unknown'}`);
+    console.log(`Request:    ${state.userRequest || '(none)'}`);
+    console.log(`Created:    ${state.createdAt || '(unknown)'}`);
+    console.log(`Updated:    ${state.updatedAt || '(unknown)'}`);
+
+    // Component statuses
+    if (state.componentStates && Object.keys(state.componentStates).length > 0) {
+      console.log(`\n--- Components ---`);
+      for (const [name, cs] of Object.entries(state.componentStates)) {
+        const changedCount = cs.changedFiles?.length || 0;
+        const violations = (cs.forbiddenPathViolations?.length || 0) + (cs.protectedPathViolations?.length || 0);
+        const cmdResults = cs.commandResults?.length || 0;
+        const passedCmds = cs.commandResults?.filter((r: any) => r.status === 'passed').length || 0;
+
+        console.log(`  ${name}:`);
+        console.log(`    Decision:   ${cs.componentDecision}`);
+        console.log(`    Change:     ${cs.changeRole}`);
+        console.log(`    Files:      ${changedCount} changed`);
+        if (violations > 0) {
+          console.log(`    Violations: ${violations} (forbidden: ${cs.forbiddenPathViolations?.length || 0}, protected: ${cs.protectedPathViolations?.length || 0})`);
+        }
+        if (cmdResults > 0) {
+          console.log(`    Commands:   ${passedCmds}/${cmdResults} passed`);
+        }
+        if (cs.diffPath) {
+          console.log(`    Diff:       ${path.join(runPaths.runDir, cs.diffPath)}`);
+        }
+        if (cs.executionRequestPath) {
+          console.log(`    Request:    ${path.join(runPaths.runDir, cs.executionRequestPath)}`);
+        }
+      }
     }
 
-    if (state.finalDecision) {
-      console.log(`\nFinal Decision: ${state.finalDecision.decision}`);
-      console.log(`Summary: ${state.finalDecision.summary}`);
-    }
-
+    // Verification
     if (state.verification) {
       const v = state.verification;
-      console.log(`\nVerification: ${v.overallStatus} (${v.totalPassed}/${v.totalCommandsRun} commands passed)`);
+      console.log(`\n--- Verification ---`);
+      console.log(`  Overall:      ${v.overallStatus}`);
+      console.log(`  Commands run: ${v.totalCommandsRun}`);
+      console.log(`  Passed:       ${v.totalPassed}`);
+      console.log(`  Failed:       ${v.totalFailed}`);
+      console.log(`  Tests run:    ${v.testsRun ? 'yes' : 'no'}`);
+      console.log(`  Builds run:   ${v.buildsRun ? 'yes' : 'no'}`);
+
+      if (v.totalFailed > 0) {
+        console.log(`\n  Failed components:`);
+        for (const [name, result] of Object.entries(v.componentResults)) {
+          if (result.status === 'failed') {
+            console.log(`    - ${name}: ${result.commandsFailed}/${result.commandsRun} failed`);
+          }
+        }
+      }
     }
 
+    // Brutal Reality Check
     if (state.brutalRealityCheck) {
       const brc = state.brutalRealityCheck;
-      console.log(`\nBrutal Reality Check (score: ${brc.score}/100)`);
-      if (brc.real && brc.real.length > 0) {
+      console.log(`\n--- Brutal Reality Check ---`);
+      console.log(`  Score: ${brc.score}/100`);
+      console.log(`  Verdict: ${brc.verdict}`);
+      if (brc.real?.length) {
         console.log(`  REAL:`);
         brc.real.forEach((item: string) => console.log(`    - ${item}`));
       }
-      if (brc.partial && brc.partial.length > 0) {
+      if (brc.partial?.length) {
         console.log(`  PARTIAL:`);
         brc.partial.forEach((item: string) => console.log(`    - ${item}`));
       }
-      if (brc.fakeOrUnverified && brc.fakeOrUnverified.length > 0) {
+      if (brc.fakeOrUnverified?.length) {
         console.log(`  FAKE_OR_UNVERIFIED:`);
         brc.fakeOrUnverified.forEach((item: string) => console.log(`    - ${item}`));
       }
-      if (brc.missing && brc.missing.length > 0) {
+      if (brc.missing?.length) {
         console.log(`  MISSING:`);
         brc.missing.forEach((item: string) => console.log(`    - ${item}`));
       }
     }
 
-    if (state.componentStates) {
-      console.log(`\nComponents:`);
-      for (const [name, cs] of Object.entries(state.componentStates)) {
-        console.log(`  - ${name}: ${cs.componentDecision} (${cs.changedFiles?.length || 0} files)`);
+    // Final Decision
+    if (state.finalDecision) {
+      const fd = state.finalDecision;
+      console.log(`\n--- Final Decision ---`);
+      console.log(`  Decision: ${fd.decision}`);
+      console.log(`  Summary:  ${fd.summary}`);
+      if (fd.requiredFixes?.length) {
+        console.log(`\n  Required fixes:`);
+        fd.requiredFixes.forEach((fix: string) => console.log(`    - ${fix}`));
       }
+      if (fd.warnings?.length) {
+        console.log(`\n  Warnings:`);
+        fd.warnings.forEach((w: string) => console.log(`    - ${w}`));
+      }
+    }
+
+    // Artifact Inspections
+    if (state.artifactInspections?.length) {
+      console.log(`\n--- Artifact Inspections ---`);
+      for (const ai of state.artifactInspections) {
+        console.log(`  ${ai.component}: ${ai.artifactType} - ${ai.status}`);
+        if (ai.errors?.length) {
+          ai.errors.forEach((e: string) => console.log(`    ERROR: ${e}`));
+        }
+        if (ai.warnings?.length) {
+          ai.warnings.forEach((w: string) => console.log(`    WARN: ${w}`));
+        }
+      }
+    }
+
+    // Missing evidence
+    const missing: string[] = [];
+    if (!state.verification) missing.push('verification not run');
+    if (!state.brutalRealityCheck) missing.push('brutal reality check not run');
+    if (!state.finalDecision) missing.push('final decision not made');
+    if (state.componentStates) {
+      for (const [name, cs] of Object.entries(state.componentStates)) {
+        if (cs.changeRole === 'modify' && cs.changedFiles.length === 0) {
+          missing.push(`${name}: marked as modify but no files changed`);
+        }
+      }
+    }
+    if (missing.length > 0) {
+      console.log(`\n--- Missing Evidence ---`);
+      missing.forEach(m => console.log(`  - ${m}`));
+    }
+
+    // Next action
+    console.log(`\n--- Next Action ---`);
+    if (state.runStatus === 'awaiting_manual_execution') {
+      console.log(`  Run: sea after-execution ${runId} -c <component> -w ${workspacePath || '.sea/workspace.json'}`);
+    } else if (state.finalDecision?.decision === 'NEEDS_FIXES') {
+      console.log(`  Review required fixes above, make changes, then re-run verification.`);
+      console.log(`  Run: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
+    } else if (state.finalDecision?.decision === 'BLOCKED') {
+      console.log(`  Resolve blockers listed above.`);
+    } else if (!state.verification) {
+      console.log(`  Run: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
+    } else {
+      console.log(`  Run complete. Review results above.`);
     }
 
     console.log(`\n=========================================\n`);

@@ -9,6 +9,7 @@ import AdmZip from 'adm-zip';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { ArtifactInspectionReport, ArtifactType } from '../state/schemas.js';
 import { saveComponentArtifact } from '../workflow/checkpoint.js';
+import { resolveComponentPathFromState, resolveArtifactPath } from '../tools/resolvePath.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ArtifactInspectionAgent');
@@ -39,8 +40,9 @@ export function createArtifactInspectionAgent(): (
       // Only inspect if component was modified
       if (componentState.changeRole === 'no_change') continue;
 
-      // Determine the artifact path
-      const artifactPath = resolveArtifactPath(component.path, component.artifact.outputPath);
+      // Determine the artifact path using centralized resolution
+      const componentPath = resolveComponentPathFromState(state, component);
+      const artifactPath = resolveArtifactPath(componentPath, component.artifact.outputPath);
 
       try {
         let report: ArtifactInspectionReport;
@@ -111,19 +113,6 @@ export function createArtifactInspectionAgent(): (
       componentStates: updatedComponentStates,
     };
   };
-}
-
-/**
- * Resolve artifact path relative to component path
- */
-function resolveArtifactPath(componentPath: string, outputPath?: string): string {
-  if (!outputPath) {
-    return componentPath;
-  }
-  if (path.isAbsolute(outputPath)) {
-    return outputPath;
-  }
-  return path.resolve(componentPath, outputPath);
 }
 
 /**

@@ -7,6 +7,7 @@ import { WorkspaceState, ComponentState } from '../state/workspaceState.js';
 import { VerificationSummary, CommandResult } from '../state/workspaceState.js';
 import { runCommand } from '../tools/commandRunner.js';
 import { saveComponentArtifact, getRunPaths } from '../workflow/checkpoint.js';
+import { resolveComponentPathFromState } from '../tools/resolvePath.js';
 import * as path from 'path';
 import { createLogger } from '../utils/logger.js';
 
@@ -131,8 +132,10 @@ export function createVerificationAgent(): (
         try {
           logger.info(`Running ${cmd.name} for ${componentName}: ${cmd.command}`);
 
+          const resolvedComponentPath = resolveComponentPathFromState(state, component);
+
           const result = await runCommand(cmd.command, {
-            cwd: component.path,
+            cwd: resolvedComponentPath,
             timeout: 300000,
             autoSave: true,
             saveDir: componentSaveDir,

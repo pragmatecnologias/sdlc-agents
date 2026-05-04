@@ -257,14 +257,29 @@ function determineVerdict(
     return 'NEEDS_FIXES';
   }
 
-  // If profile requires tests but none were run (and no profile override above caught it)
-  if (!evidence.testsRun) {
-    return 'APPROVED_WITH_NOTES';
+  // Check for modified components without verification
+  if (componentStates) {
+    const modifiedWithCommands = Object.entries(componentStates).filter(
+      ([, cs]) => cs.changeRole === 'modify' && cs.commandResults?.length === 0
+    );
+    if (modifiedWithCommands.length > 0) {
+      return 'NEEDS_FIXES';
+    }
+  }
+
+  // If tests are not run but diffs exist, that's NEEDS_FIXES (not APPROVED_WITH_NOTES)
+  if (!evidence.testsRun && evidence.diffsCaptured) {
+    return 'NEEDS_FIXES';
+  }
+
+  // If builds are not run but diffs exist, that's NEEDS_FIXES
+  if (!evidence.buildsRun && evidence.diffsCaptured) {
+    return 'NEEDS_FIXES';
   }
 
   // Determine based on overall quality
   if (brutalVerdict === 'APPROVED') {
-    return evidence.buildsRun ? 'APPROVED' : 'APPROVED_WITH_NOTES';
+    return 'APPROVED';
   }
 
   return 'APPROVED_WITH_NOTES';

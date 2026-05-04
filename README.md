@@ -94,12 +94,12 @@ sea memory "authentication" -w .sea/workspace.json
 
 The executor is configured in `.sea/workspace.json` under `defaultExecutor`:
 
-- **manual** (MVP) - Generates markdown execution request files. Human performs work externally, then captures evidence with `sea after-execution`
-- **copilot-cli** - GitHub Copilot CLI (placeholder)
-- **claude-code** - Anthropic Claude Code (placeholder)
-- **codex-cli** - OpenAI Codex CLI (placeholder)
-- **openclaw** - OpenClaw (placeholder)
-- **shell** - Direct shell command execution (placeholder)
+- **manual** (working) - Generates markdown execution request files. Human performs work externally, then captures evidence with `sea after-execution`
+- **copilot-cli** - Not implemented. Interface exists, adapter needs implementation.
+- **claude-code** - Not implemented. Interface exists, adapter needs implementation.
+- **codex-cli** - Not implemented. Interface exists, adapter needs implementation.
+- **openclaw** - Not implemented. Interface exists, adapter needs implementation.
+- **shell** - Not implemented. Interface exists, adapter needs implementation.
 
 ## Project Profiles
 
@@ -112,7 +112,7 @@ SEA adapts its verification and artifact inspection based on project type:
 | SPRING_BOOT_SERVICE | mvn test + mvn package | JAR with MANIFEST.MF |
 | THREEJS_GAME | npm test + npm run build | static-bundle |
 | CHROME_EXTENSION | npm run build | browser-extension manifest.json |
-| And 12 more... | | |
+| NODE_API, REACT_APP, ANGULAR_APP, VUE_APP, PYTHON_CLI, LIBRARY_PACKAGE, MICROSERVICES_WORKSPACE, INFRASTRUCTURE_REPO, DOCUMENTATION_REPO, MULTI_REPO_ENTERPRISE_APP, CUSTOM | Profile-specific | Profile-specific |
 
 ## Evidence Model
 
@@ -159,4 +159,4 @@ npm test   # Runs integration tests in tests/integration/
 
 ## Project Status
 
-MVP complete. All 19 phases execute end-to-end with real evidence capture. The manual executor flow is fully functional.
+Strong prototype / early usable control plane. The manual executor flow works end-to-end with real evidence capture across all 19 phases. Automated executor adapters (Copilot, Claude Code, Codex, OpenClaw, Shell) are defined but not implemented - only the manual executor is functional. Not yet a production-grade engineering orchestrator.

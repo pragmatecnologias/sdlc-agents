@@ -36,12 +36,15 @@ export function createImpactAnalysisAgent(): (
     const humanReviewReasons: string[] = [];
 
     // Analyze each component
+    const isSingleComponentWorkspace = workspaceDiscovery.components.length === 1;
     for (const component of workspaceDiscovery.components) {
-      const changeRole = analyzeComponentImpact(
-        component,
-        userRequest,
-        requirement?.suspectedAffectedComponents || []
-      );
+      const changeRole = isSingleComponentWorkspace
+        ? 'modify' as ChangeRole
+        : analyzeComponentImpact(
+            component,
+            userRequest,
+            requirement?.suspectedAffectedComponents || []
+          );
 
       affectedComponents.push({
         component: component.name,
