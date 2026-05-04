@@ -28,7 +28,7 @@ import {
 } from '../tools/gitTool.js';
 import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
 import { runCommand } from '../tools/commandRunner.js';
-import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir } from '../tools/resolvePath.js';
+import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir, resolveArtifactPath } from '../tools/resolvePath.js';
 
 const logger = createLogger('CLI');
 
@@ -115,6 +115,17 @@ export function registerCommands(program: Command): void {
     .option('-w, --workspace <path>', 'Path to workspace.json')
     .action(async (runId, options) => {
       await handleVerify(runId, options.workspace);
+    });
+
+  // inspect-artifact command
+  program
+    .command('inspect-artifact')
+    .description('Inspect component artifact (JAR, WAR, npm package, etc.)')
+    .argument('<runId>', 'Run ID')
+    .requiredOption('-c, --component <name>', 'Component name')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (runId, options) => {
+      await handleInspectArtifact(runId, options.component, options.workspace);
     });
 
   // resume command
@@ -716,6 +727,137 @@ async function handleVerify(runId: string, workspacePath?: string): Promise<void
   if (summary.overallStatus === 'passed') {
     console.log(`\nNext: sea report ${runId}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// inspect-artifact
+// ---------------------------------------------------------------------------
+
+async function handleInspectArtifact(
+  runId: string,
+  componentName: string,
+  workspacePath?: string
+): Promise<void> {
+  logger.info(`Inspecting artifact for component ${componentName} in run ${runId}`);
+
+  const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
+  let state: WorkspaceState;
+  try {
+    state = await loadState(runId, baseDir);
+  } catch {
+    console.error(`Run ${runId} not found. Checked: ${baseDir}`);
+    process.exit(1);
+  }
+
+  // Find the component config
+  const componentConfig = state.workspace.components.find(c => c.name === componentName);
+  if (!componentConfig) {
+    console.error(`Component '${componentName}' not found in workspace`);
+    process.exit(1);
+  }
+
+  if (!componentConfig.artifact || componentConfig.artifact.type === 'none') {
+    console.error(`Component '${componentName}' does not produce an artifact`);
+    process.exit(1);
+  }
+
+  // Resolve component path and artifact path
+  const componentPath = resolveComponentPathFromState(state, componentConfig);
+  const artifactPath = resolveArtifactPath(componentPath, componentConfig.artifact.outputPath);
+
+  // Check if artifact exists
+  let artifactExists = false;
+  try {
+    await fs.access(artifactPath);
+    artifactExists = true;
+  } catch {
+    // try as directory (for built artifacts)
+    try {
+      const stat = await fs.stat(artifactPath);
+      artifactExists = stat.isFile();
+    } catch {
+      artifactExists = false;
+    }
+  }
+
+  if (!artifactExists) {
+    console.error(`Artifact not found: ${artifactPath}`);
+    console.error(`Run 'sea run ...' to build the artifact first, or use manual executor to build`);
+    process.exit(1);
+  }
+
+  console.log(`Inspecting artifact: ${artifactPath}`);
+
+  // Use artifact inspection agent
+  const agents = createSeaAgents({
+    memoryPath: state.workspace.memory?.path || path.join(baseDir, 'engineering_memory.md'),
+  });
+
+  // Run artifact inspection
+  const result = await agents.artifactInspectionAgent(state);
+
+  // Merge result into state
+  if (result.artifactInspections) {
+    state.artifactInspections = result.artifactInspections;
+  }
+  if (result.componentStates) {
+    state.componentStates = { ...state.componentStates, ...result.componentStates };
+  }
+  await saveState(state, baseDir);
+
+  // Find the inspection for this component
+  const inspection = state.artifactInspections.find(
+    (ai: any) => ai.component === componentName
+  );
+
+  if (!inspection) {
+    console.error(`No artifact inspection result for component '${componentName}'`);
+    process.exit(1);
+  }
+
+  // Print inspection result
+  console.log(`\n=== Artifact Inspection: ${componentName} ===`);
+  console.log(`  Artifact:   ${inspection.artifactPath}`);
+  console.log(`  Type:      ${inspection.artifactType}`);
+  console.log(`  Status:    ${inspection.status}`);
+  console.log(`  Exists:    ${inspection.exists ? 'yes' : 'no'}`);
+  console.log(`  Readable:  ${inspection.readable ? 'yes' : 'no'}`);
+
+  if (Object.keys(inspection.entriesChecked || {}).length > 0) {
+    console.log(`\n  Entries checked:`);
+    for (const [entry, present] of Object.entries(inspection.entriesChecked)) {
+      console.log(`    ${entry}: ${present ? '✓' : '✗'}`);
+    }
+  }
+
+  if (inspection.errors && inspection.errors.length > 0) {
+    console.log(`\n  Errors:`);
+    for (const err of inspection.errors) {
+      console.log(`    - ${err}`);
+    }
+  }
+
+  if (inspection.warnings && inspection.warnings.length > 0) {
+    console.log(`\n  Warnings:`);
+    for (const warn of inspection.warnings) {
+      console.log(`    - ${warn}`);
+    }
+  }
+
+  // Save inspection report to component directory
+  const componentState = state.componentStates[componentName];
+  if (componentState) {
+    const runPaths = {
+      runDir: path.join(baseDir, 'runs', runId),
+      componentsDir: path.join(baseDir, 'runs', runId, 'components'),
+    };
+    const componentDir = path.join(runPaths.componentsDir, componentName);
+    const reportPath = path.join(componentDir, 'artifact-inspection.json');
+    await fs.writeFile(reportPath, JSON.stringify(inspection, null, 2), 'utf-8');
+    console.log(`\n  Report saved to: ${reportPath}`);
+  }
+
+  console.log(`\nNext: sea report ${runId}`);
 }
 
 // ---------------------------------------------------------------------------

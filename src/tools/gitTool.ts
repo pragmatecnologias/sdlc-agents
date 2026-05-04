@@ -174,9 +174,12 @@ export async function getFullDiff(repoPath: string): Promise<GitDiff> {
   // but for untracked files we need `--no-index /dev/null <file>` or
   // `git add --intent-to-add` — instead we ask simple-git for status and
   // concatenate untracked-file diffs manually.
+  // Capture staged + unstaged diffs SCOPED to this component directory (.)
+  // Without pathspec, simpleGit returns ALL changes across the entire repo
+  // (it discovers parent git at workspace root, not component root).
   const [stagedRaw, unstagedRaw, status] = await Promise.all([
-    git.diff(['--staged']),
-    git.diff([]),
+    git.diff(['--staged', '--', '.']),
+    git.diff(['--', '.']),
     git.status(),
   ]);
 

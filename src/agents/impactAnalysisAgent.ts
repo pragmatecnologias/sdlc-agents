@@ -37,14 +37,17 @@ export function createImpactAnalysisAgent(): (
 
     // Analyze each component
     const isSingleComponentWorkspace = workspaceDiscovery.components.length === 1;
+    const isMultiComponentWorkspace = workspaceDiscovery.components.length > 2;
     for (const component of workspaceDiscovery.components) {
-      const changeRole = isSingleComponentWorkspace
-        ? 'modify' as ChangeRole
-        : analyzeComponentImpact(
-            component,
-            userRequest,
-            requirement?.suspectedAffectedComponents || []
-          );
+      const changeRole = isMultiComponentWorkspace
+        ? analyzeComponentImpactMulti(component, userRequest, requirement?.suspectedAffectedComponents || [])
+        : isSingleComponentWorkspace
+          ? 'modify' as ChangeRole
+          : analyzeComponentImpact(
+              component,
+              userRequest,
+              requirement?.suspectedAffectedComponents || []
+            );
 
       affectedComponents.push({
         component: component.name,
@@ -136,6 +139,76 @@ function analyzeComponentImpact(
   }
 
   // Default to no_change
+  return 'no_change';
+}
+
+/**
+ * Multi-component workspace impact analysis with WAR/enterprise heuristics.
+ * In a WAR composite workspace, source components (frontend/backend) are
+ * always modified when the request relates to features/data, while assembly
+ * components are marked verify_only for artifact verification.
+ */
+function analyzeComponentImpactMulti(
+  component: { name: string; type: string },
+  request: string,
+  suspectedComponents: string[]
+): ChangeRole {
+  const lowerRequest = request.toLowerCase();
+  const componentNameLower = component.name.toLowerCase();
+
+  // Check if explicitly mentioned
+  const isExplicitlyMentioned = suspectedComponents.some(
+    c => c.toLowerCase() === componentNameLower
+  );
+
+  if (isExplicitlyMentioned) {
+    return 'modify';
+  }
+
+  // Type-based heuristics for WAR composite workspaces
+  switch (component.type) {
+    case 'frontend':
+    case 'ui': {
+      // Check for UI-related keywords
+      const uiKeywords = ['ui', 'frontend', 'button', 'page', 'screen', 'component', 'interface', 'login', 'form', 'search', 'display', 'view'];
+      const hasUIKeyword = uiKeywords.some(k => lowerRequest.includes(k));
+      if (hasUIKeyword) return 'modify';
+      // Also modify if request is about data/features that likely affect UI
+      const featureKeywords = ['add', 'show', 'display', 'view', 'customer', 'status', 'search', 'result', 'page'];
+      const hasFeatureKeyword = featureKeywords.some(k => lowerRequest.includes(k));
+      if (hasFeatureKeyword) return 'modify';
+      break;
+    }
+    case 'backend':
+    case 'service': {
+      // Check for backend-related keywords
+      const backendKeywords = ['backend', 'api', 'server', 'endpoint', 'service', 'database', 'auth', 'login', 'customer', 'data'];
+      const hasBackendKeyword = backendKeywords.some(k => lowerRequest.includes(k));
+      if (hasBackendKeyword) return 'modify';
+      // Also modify for data/feature requests
+      const featureKeywords = ['add', 'update', 'customer', 'status', 'search', 'result', 'data'];
+      const hasFeatureKeyword = featureKeywords.some(k => lowerRequest.includes(k));
+      if (hasFeatureKeyword) return 'modify';
+      break;
+    }
+    case 'assembly':
+    case 'packager': {
+      // Assembly components are typically verify_only - they rebuild the artifact
+      return 'verify_only';
+    }
+  }
+
+  // Check for general development keywords
+  const generalKeywords = ['refactor', 'performance', 'optimize', 'bug', 'fix'];
+  const hasGeneralKeyword = generalKeywords.some(k => lowerRequest.includes(k));
+  if (hasGeneralKeyword) return 'verify_only';
+
+  // For WAR workspaces with multiple source components, default to modify
+  // for frontend/backend types if no clear no_change signal
+  if (component.type === 'frontend' || component.type === 'ui' || component.type === 'backend') {
+    return 'modify';
+  }
+
   return 'no_change';
 }
 

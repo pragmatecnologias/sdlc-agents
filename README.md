@@ -101,18 +101,22 @@ The executor is configured in `.sea/workspace.json` under `defaultExecutor`:
 - **openclaw** - Not implemented. Interface exists, adapter needs implementation.
 - **shell** - Not implemented. Interface exists, adapter needs implementation.
 
-## Project Profiles
+## Project Profiles + Implementation Truth Matrix
 
-SEA adapts its verification and artifact inspection based on project type:
+SEA adapts its verification and artifact inspection based on project type.
 
-| Profile | Verification | Artifact Inspection |
-|---------|-------------|-------------------|
-| WAR_COMPOSITE_APP | mvn test + mvn package | WAR file with WEB-INF/web.xml |
-| SINGLE_REPO_FRONTEND | npm install + npm test + npm run build | static-bundle (dist/) |
-| SPRING_BOOT_SERVICE | mvn test + mvn package | JAR with MANIFEST.MF |
-| THREEJS_GAME | npm test + npm run build | static-bundle |
-| CHROME_EXTENSION | npm run build | browser-extension manifest.json |
-| NODE_API, REACT_APP, ANGULAR_APP, VUE_APP, PYTHON_CLI, LIBRARY_PACKAGE, MICROSERVICES_WORKSPACE, INFRASTRUCTURE_REPO, DOCUMENTATION_REPO, MULTI_REPO_ENTERPRISE_APP, CUSTOM | Profile-specific | Profile-specific |
+**Legend:** ✅ = runtime-tested with fixture/acceptance test | ⚙️ = code implemented, not yet runtime-tested | ❌ = not implemented
+
+| Profile | Implemented | Fixture | Acceptance Test | Artifact Inspection |
+|---------|-------------|---------|----------------|-------------------|
+| WAR_COMPOSITE_APP | ✅ | `tests/fixtures/war-composite/` (ui + backend + war-builder, valid WAR with WEB-INF) | `war-composite-acceptance.test.ts` (9 tests, full 3-component CLI loop) | ✅ adm-zip WAR inspection (WEB-INF/web.xml, WEB-INF/classes/, WEB-INF/lib/) |
+| SINGLE_REPO_FRONTEND | ✅ | `tests/fixtures/single-frontend/` (npm package.json, tsconfig, source) | `cli-acceptance.test.ts` (6 tests, plan/run/request/after-execution/verify/report) | ⚙️ static-bundle inspection exists, not yet runtime-tested with fixture |
+| SPRING_BOOT_SERVICE | ⚙️ profile only | ❌ | ❌ | ⚙️ JAR inspection exists, not yet runtime-tested |
+| CHROME_EXTENSION | ⚙️ profile only | ❌ | ❌ | ⚙️ browser-extension manifest inspection exists, not yet runtime-tested |
+| THREEJS_GAME | ⚙️ profile only | ❌ | ❌ | ⚙️ static-bundle inspection exists, not yet runtime-tested |
+| All other profiles (NODE_API, REACT_APP, ANGULAR_APP, VUE_APP, PYTHON_CLI, LIBRARY_PACKAGE, MICROSERVICES_WORKSPACE, INFRASTRUCTURE_REPO, DOCUMENTATION_REPO, MULTI_REPO_ENTERPRISE_APP, CUSTOM) | ⚙️ profile defined | ❌ | ❌ | ❌ |
+
+**What works today:** Full manual executor CLI loop (plan → run → request → after-execution → verify → report) with real git evidence capture, diff output, command stdout/stderr, and WAR artifact inspection for the WAR_COMPOSITE_APP profile.
 
 ## Evidence Model
 
