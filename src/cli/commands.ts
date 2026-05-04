@@ -508,13 +508,36 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     process.exit(1);
   }
 
-  // Find component state
-  const componentState = state.componentStates[component];
+  // Find or create component state (after-execution works even for components not in the original plan)
+  let componentState = state.componentStates[component];
   if (!componentState) {
-    const available = Object.keys(state.componentStates).join(', ');
-    console.error(`Component "${component}" has no state in run ${runId}.`);
-    console.error(`Components with state: ${available || '(none)'}`);
-    process.exit(1);
+    console.log(`  Component "${component}" has no prior state - creating minimal state`);
+    componentState = {
+      componentName: component,
+      componentPath: componentConfig.path,
+      kind: componentConfig.kind,
+      role: componentConfig.role,
+      changeRole: 'modify' as const,
+      branchBefore: null,
+      branchCreated: null,
+      dirtyBefore: false,
+      dirtyAfter: false,
+      analysis: null,
+      plan: null,
+      executionRequestPath: null,
+      executorResult: null,
+      gitStatusBeforePath: null,
+      gitStatusAfterPath: null,
+      changedFiles: [],
+      forbiddenPathViolations: [],
+      protectedPathViolations: [],
+      diffPath: null,
+      commandResults: [],
+      artifactInspection: null,
+      fixAttempts: [],
+      componentDecision: 'pending' as const,
+    };
+    state.componentStates[component] = componentState;
   }
 
   // Resolve component path relative to workspace root (parent of .sea directory)
