@@ -161,6 +161,19 @@ export class WorkflowRunner {
           await saveCheckpoint(state, stepId, this.options.baseDir);
         }
 
+        // If execution just completed and manual execution is required,
+        // stop the workflow here. The user will run after-execution → verify → report.
+        if (stepId === 'execution' && state.runStatus === 'awaiting_manual_execution') {
+          await saveState(state, this.options.baseDir);
+          logger.info('Workflow paused: awaiting manual execution');
+          return {
+            success: true,
+            aborted: false,
+            state,
+            completedPhases,
+          };
+        }
+
         stepIndex++;
       }
 
@@ -177,6 +190,14 @@ export class WorkflowRunner {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logger.error(`Workflow failed at step ${getStepId(steps[stepIndex])}: ${errorMessage}`);
+
+      // Save state even on failure so after-execution and resume can work
+      try {
+        await saveState(state, this.options.baseDir);
+      } catch {
+        // Best effort - don't mask the original error
+      }
+
       return {
         success: false,
         aborted: false,

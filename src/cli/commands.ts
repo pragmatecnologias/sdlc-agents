@@ -723,7 +723,10 @@ async function handleVerify(runId: string, workspacePath?: string): Promise<void
       continue;
     }
 
-    const componentPath = path.resolve(componentConfig.path);
+    const workspaceRoot = state.baseDir ? path.resolve(state.baseDir, '..') : process.cwd();
+    const componentPath = path.isAbsolute(componentConfig.path)
+      ? componentConfig.path
+      : path.resolve(workspaceRoot, componentConfig.path);
     const componentDir = path.join(runPaths.componentsDir, componentName);
     await fs.mkdir(componentDir, { recursive: true });
 

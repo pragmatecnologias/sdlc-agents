@@ -3,6 +3,7 @@
  * Inspects git diff and validates against allowed/protected/forbidden paths
  */
 
+import * as path from 'path';
 import {
   WorkspaceState,
   ComponentState,
@@ -32,6 +33,11 @@ export function createDiffInspectorAgent(): (
 
     const { workspace, componentStates } = state;
 
+    // Resolve workspace root from baseDir (parent of .sea directory)
+    const workspaceRoot = state.baseDir
+      ? path.resolve(state.baseDir, '..')
+      : process.cwd();
+
     const updatedComponentStates = { ...(componentStates || {}) };
     const allViolations: string[] = [];
 
@@ -44,13 +50,18 @@ export function createDiffInspectorAgent(): (
       const component = workspace.components?.find(c => c.name === componentName);
       if (!component) continue;
 
+      // Resolve component path relative to workspace root
+      const resolvedComponentPath = path.isAbsolute(component.path)
+        ? component.path
+        : path.resolve(workspaceRoot, component.path);
+
       const result = await inspectComponentDiff(
         state.runId,
         componentName,
-        component.path,
+        resolvedComponentPath,
         component.protectedPaths || [],
         component.forbiddenPaths || [],
-        '.sea'
+        state.baseDir || '.sea'
       );
 
       // Update component state
