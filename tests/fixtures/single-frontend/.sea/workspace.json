@@ -1,0 +1,52 @@
+{
+  "workspaceName": "single-frontend",
+  "projectProfile": "REACT_APP",
+  "defaultExecutor": "manual",
+  "components": [
+    {
+      "name": "app",
+      "path": ".",
+      "kind": "frontend",
+      "role": "source",
+      "technology": "typescript",
+      "framework": "react",
+      "packageManager": "npm",
+      "commands": {
+        "install": "npm install",
+        "test": "npm test",
+        "lint": "npm run lint",
+        "build": "npm run build"
+      },
+      "artifact": {
+        "type": "static-bundle",
+        "outputPath": "dist",
+        "requiredEntries": ["index.html"]
+      },
+      "dependencies": [],
+      "produces": ["static-bundle"]
+    }
+  ],
+  "approvalPolicy": {
+    "requireBeforeImplementation": false,
+    "requireForAuthChanges": true,
+    "requireForDatabaseMigrations": true,
+    "requireForPackageChanges": true,
+    "requireForBuildConfigChanges": true,
+    "requireForDeletingFiles": true
+  },
+  "qualityGates": {
+    "requireSourceRepoCleanBeforeRun": true,
+    "requireFinalArtifactBuild": true,
+    "requireArtifactInspection": true,
+    "blockOnForbiddenPathModification": true,
+    "blockOnProtectedPathModificationWithoutApproval": true,
+    "warnIfNoSmokeTest": true
+  },
+  "memory": {
+    "enabled": true,
+    "path": ".sea/engineering_memory.md"
+  },
+  "artifacts": {
+    "rootDir": ".sea/runs"
+  }
+}

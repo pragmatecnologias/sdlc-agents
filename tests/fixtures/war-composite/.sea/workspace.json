@@ -1,0 +1,91 @@
+{
+  "workspaceName": "war-composite",
+  "projectProfile": "WAR_COMPOSITE_APP",
+  "defaultExecutor": "manual",
+  "components": [
+    {
+      "name": "ui",
+      "path": "ui",
+      "kind": "frontend",
+      "role": "source",
+      "technology": "typescript",
+      "framework": "react",
+      "packageManager": "npm",
+      "commands": {
+        "install": "npm install",
+        "test": "npm test",
+        "build": "npm run build"
+      },
+      "artifact": {
+        "type": "static-bundle",
+        "outputPath": "dist",
+        "requiredEntries": ["index.html"]
+      },
+      "dependencies": ["backend"],
+      "produces": ["static-bundle"]
+    },
+    {
+      "name": "backend",
+      "path": "backend",
+      "kind": "backend",
+      "role": "source",
+      "technology": "java",
+      "framework": "spring-boot",
+      "packageManager": "maven",
+      "commands": {
+        "test": "mvn test",
+        "build": "mvn package"
+      },
+      "artifact": {
+        "type": "jar",
+        "outputPath": "target",
+        "outputGlob": "target/*.jar",
+        "requiredEntries": ["META-INF/MANIFEST.MF"]
+      },
+      "dependencies": [],
+      "produces": ["jar"]
+    },
+    {
+      "name": "war-builder",
+      "path": "war-builder",
+      "kind": "assembly",
+      "role": "assembler",
+      "technology": "java",
+      "packageManager": "maven",
+      "commands": {
+        "build": "mvn package"
+      },
+      "artifact": {
+        "type": "war",
+        "outputPath": "target",
+        "outputGlob": "target/*.war",
+        "requiredEntries": ["WEB-INF/web.xml"]
+      },
+      "dependencies": ["ui", "backend"],
+      "produces": ["war"]
+    }
+  ],
+  "approvalPolicy": {
+    "requireBeforeImplementation": false,
+    "requireForAuthChanges": true,
+    "requireForDatabaseMigrations": true,
+    "requireForPackageChanges": true,
+    "requireForBuildConfigChanges": true,
+    "requireForDeletingFiles": true
+  },
+  "qualityGates": {
+    "requireSourceRepoCleanBeforeRun": true,
+    "requireFinalArtifactBuild": true,
+    "requireArtifactInspection": true,
+    "blockOnForbiddenPathModification": true,
+    "blockOnProtectedPathModificationWithoutApproval": true,
+    "warnIfNoSmokeTest": true
+  },
+  "memory": {
+    "enabled": true,
+    "path": ".sea/engineering_memory.md"
+  },
+  "artifacts": {
+    "rootDir": ".sea/runs"
+  }
+}
