@@ -110,7 +110,7 @@ function parseDiffSummary(raw: string): { files: string[]; insertions: number; d
 export async function getGitStatus(repoPath: string): Promise<GitStatus> {
   try {
     const git = await requireRepo(repoPath);
-    const status: StatusResult = await git.status();
+    const status: StatusResult = await git.status(['--', '.']);
 
     return {
       isRepo: true,
@@ -175,12 +175,12 @@ export async function getFullDiff(repoPath: string): Promise<GitDiff> {
   // `git add --intent-to-add` — instead we ask simple-git for status and
   // concatenate untracked-file diffs manually.
   // Capture staged + unstaged diffs SCOPED to this component directory (.)
-  // Without pathspec, simpleGit returns ALL changes across the entire repo
-  // (it discovers parent git at workspace root, not component root).
+  // Without pathspec, simpleGit discovers parent repo at workspace root
+  // and returns ALL changes across the entire workspace.
   const [stagedRaw, unstagedRaw, status] = await Promise.all([
     git.diff(['--staged', '--', '.']),
     git.diff(['--', '.']),
-    git.status(),
+    git.status(['--', '.']),
   ]);
 
   let raw = stagedRaw;
@@ -210,7 +210,7 @@ export async function getFullDiff(repoPath: string): Promise<GitDiff> {
  */
 export async function getChangedFiles(repoPath: string): Promise<string[]> {
   const git = await requireRepo(repoPath);
-  const status: StatusResult = await git.status();
+  const status: StatusResult = await git.status(['--', '.']);
 
   // Use a Set to deduplicate — a file can appear in both staged and modified.
   const changed = new Set<string>();
