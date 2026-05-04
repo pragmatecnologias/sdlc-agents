@@ -13,6 +13,34 @@ import { WorkspaceState } from '../state/workspaceState.js';
 import { ComponentConfig } from '../state/schemas.js';
 
 /**
+ * Resolve the .sea directory path from a workspace config path.
+ */
+export function resolveSeaDir(workspacePath: string): string {
+  return path.dirname(workspacePath);
+}
+
+/**
+ * Resolve the workspace root (parent of .sea/) from a workspace config path.
+ */
+export function resolveWorkspaceRoot(workspacePath: string): string {
+  return path.dirname(path.dirname(workspacePath));
+}
+
+/**
+ * Resolve the run base directory (.sea/runs/) from a workspace config path.
+ */
+export function resolveRunBaseDir(workspacePath: string): string {
+  return path.join(path.dirname(workspacePath), 'runs');
+}
+
+/**
+ * Resolve a specific run directory (.sea/runs/<runId>).
+ */
+export function resolveRunDir(workspacePath: string, runId: string): string {
+  return path.join(resolveRunBaseDir(workspacePath), runId);
+}
+
+/**
  * Resolve a component's absolute path from workspace state and config.
  *
  * @param workspaceRoot - The workspace root directory (parent of .sea/)

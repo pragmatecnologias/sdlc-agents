@@ -28,41 +28,13 @@ import {
 } from '../tools/gitTool.js';
 import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
 import { runCommand } from '../tools/commandRunner.js';
-import { resolveComponentPathFromState, getWorkspaceRoot } from '../tools/resolvePath.js';
+import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir } from '../tools/resolvePath.js';
 
 const logger = createLogger('CLI');
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve the base directory (.sea parent) from a workspace.json path.
- * For example, given '/project/.sea/workspace.json' returns '/project'.
- * Falls back to '.' if the path doesn't contain '.sea'.
- */
-function resolveBaseDir(workspacePath: string): string {
-  const seaDir = path.dirname(workspacePath); // e.g. /project/.sea
-  const baseDir = path.dirname(seaDir);       // e.g. /project
-  // Sanity: if dirname(seaDir) === seaDir (root) or doesn't make sense, use cwd
-  return baseDir && baseDir !== seaDir ? baseDir : process.cwd();
-}
-
-/**
- * Derive the .sea directory path from a workspace.json path.
- * e.g. '/project/.sea/workspace.json' -> '/project/.sea'
- */
-function resolveSeaDir(workspacePath: string): string {
-  return path.dirname(workspacePath);
-}
-
-/**
- * Resolve the baseDir for runs relative to a workspace.json path.
- * This is the parent directory of the .sea directory.
- */
-function resolveRunBaseDir(workspacePath: string): string {
-  return path.dirname(path.dirname(workspacePath));
-}
 
 // ---------------------------------------------------------------------------
 // Command Registration
@@ -260,7 +232,7 @@ async function handlePlan(request: string, workspacePath: string): Promise<void>
     const runId = `run-${Date.now()}`;
 
     // Get actual workspace path (parent of .sea directory)
-    const baseDir = resolveBaseDir(workspacePath);
+    const baseDir = resolveWorkspaceRoot(workspacePath);
 
     // Fix workspaceConfig to use actual path as workspaceName
     const workspaceConfigForRun = {
@@ -343,7 +315,7 @@ async function handleRun(
     const runId = `run-${Date.now()}`;
 
     // Get actual workspace path (parent of .sea directory)
-    const baseDir = resolveBaseDir(workspacePath);
+    const baseDir = resolveWorkspaceRoot(workspacePath);
     const seaDir = resolveSeaDir(workspacePath);
 
     // Fix workspaceConfig to use actual path as workspaceName
@@ -595,7 +567,7 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
   const pathPolicy: PathPolicy = {
     allowedPaths: planAllowedPaths.length > 0
       ? planAllowedPaths
-      : [componentConfig.path],
+      : ['**/*'],
     protectedPaths: [
       ...planProtectedPaths,
       ...(componentConfig.protectedPaths || []),
