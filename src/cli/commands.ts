@@ -517,7 +517,12 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     process.exit(1);
   }
 
-  const componentPath = path.resolve(componentConfig.path);
+  // Resolve component path relative to workspace root (parent of .sea directory)
+  const workspaceRoot = state.baseDir ? path.dirname(state.baseDir) : path.dirname(baseDir);
+  const componentPath = path.isAbsolute(componentConfig.path)
+    ? componentConfig.path
+    : path.resolve(workspaceRoot, componentConfig.path);
+
   const runPaths = getRunPaths(runId, baseDir);
   const componentDir = path.join(runPaths.componentsDir, component);
   await fs.mkdir(componentDir, { recursive: true });
