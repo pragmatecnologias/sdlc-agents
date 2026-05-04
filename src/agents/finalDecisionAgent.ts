@@ -1,6 +1,6 @@
 /**
  * Final Decision Agent for SEA
- * Produces final engineering decision
+ * Produces final engineering decision with comprehensive checks
  */
 
 import { WorkspaceState } from '../state/workspaceState.js';
@@ -25,6 +25,8 @@ export function createFinalDecisionAgent(): (
       securityReview,
       performanceReview,
       componentStates,
+      projectProfile,
+      executionGroups,
     } = state;
 
     const cs = componentStates || {};
@@ -64,7 +66,25 @@ export function createFinalDecisionAgent(): (
     }
 
     if (verification?.totalFailed && verification.totalFailed > 0) {
-      requiredFixes.push(`${verification.totalFailed} verification commands failed`);
+      requiredFixes.push(`${verification.totalFailed} verification command(s) failed`);
+    }
+
+    // Check execution group statuses -- if any group failed, add required fix
+    if (executionGroups) {
+      for (const group of executionGroups) {
+        if (group.status === 'failed') {
+          requiredFixes.push(`Execution group "${group.groupId}" failed`);
+        }
+      }
+    }
+
+    // Check profile requiredVerification against actual verification
+    if (projectProfile?.requiredVerification) {
+      for (const requiredV of projectProfile.requiredVerification) {
+        if (!isVerificationCovered(requiredV, cs, verification)) {
+          requiredFixes.push(`Profile requires "${requiredV}" but it was not performed`);
+        }
+      }
     }
 
     // Collect warnings
@@ -82,12 +102,25 @@ export function createFinalDecisionAgent(): (
       warnings.push(...performanceReview.warnings);
     }
 
+    // Check profile recommendedVerification -- add warnings if not met (not blockers)
+    if (projectProfile?.recommendedVerification) {
+      for (const recV of projectProfile.recommendedVerification) {
+        if (!isVerificationCovered(recV, cs, verification)) {
+          warnings.push(`Profile recommends "${recV}" but it was not performed`);
+        }
+      }
+    }
+
     // Determine verdict
     const verdict = determineVerdict(
       evidence,
       brutalRealityCheck?.verdict,
       securityReview?.status,
-      performanceReview?.status
+      performanceReview?.status,
+      projectProfile,
+      cs,
+      verification,
+      executionGroups
     );
 
     // Generate summary
@@ -113,6 +146,40 @@ export function createFinalDecisionAgent(): (
   };
 }
 
+/**
+ * Check whether a specific verification type was performed
+ */
+function isVerificationCovered(
+  verificationType: string,
+  componentStates: Record<string, any>,
+  verification: any
+): boolean {
+  const typeLower = verificationType.toLowerCase();
+
+  // Check command results across all components
+  for (const cs of Object.values(componentStates)) {
+    for (const cr of cs.commandResults || []) {
+      if (cr.commandName.toLowerCase().includes(typeLower)) {
+        return true;
+      }
+    }
+  }
+
+  // Check verification summary flags
+  if (typeLower.includes('test') && verification?.testsRun) return true;
+  if (typeLower.includes('build') && verification?.buildsRun) return true;
+  if (typeLower.includes('security') && csHasAnyWith(componentStates, 'security')) return true;
+
+  return false;
+}
+
+/**
+ * Check if any component state has a particular key with a truthy value
+ */
+function csHasAnyWith(componentStates: Record<string, any>, key: string): boolean {
+  return Object.values(componentStates).some((cs: any) => !!cs[key]);
+}
+
 function getComponentStatusReason(componentState: WorkspaceState['componentStates'][string]): string {
   if (componentState.componentDecision === 'verified') {
     return 'All checks passed';
@@ -136,9 +203,13 @@ function determineVerdict(
   evidence: FinalDecisionReport['evidence'],
   brutalVerdict?: FinalVerdict,
   securityStatus?: string,
-  performanceStatus?: string
+  performanceStatus?: string,
+  projectProfile?: WorkspaceState['projectProfile'],
+  componentStates?: Record<string, any>,
+  verification?: any,
+  executionGroups?: any[]
 ): FinalVerdict {
-  // Hard blockers
+  // Hard blockers: forbidden paths or security
   if (evidence.forbiddenPathViolations > 0) {
     return 'BLOCKED';
   }
@@ -150,6 +221,27 @@ function determineVerdict(
   }
   if (securityStatus === 'blocked') {
     return 'BLOCKED';
+  }
+
+  // Check execution group failures
+  if (executionGroups) {
+    const anyGroupFailed = executionGroups.some((g: any) => g.status === 'failed');
+    if (anyGroupFailed) {
+      return 'NEEDS_FIXES';
+    }
+  }
+
+  // Check profile required verification -- if profile requires tests but none were run => NEEDS_FIXES
+  if (projectProfile?.requiredVerification) {
+    for (const reqV of projectProfile.requiredVerification) {
+      if (
+        reqV.toLowerCase().includes('test') &&
+        verification &&
+        !verification.testsRun
+      ) {
+        return 'NEEDS_FIXES';
+      }
+    }
   }
 
   // Check brutal reality check verdict
@@ -164,6 +256,8 @@ function determineVerdict(
   if (!evidence.diffsCaptured) {
     return 'NEEDS_FIXES';
   }
+
+  // If profile requires tests but none were run (and no profile override above caught it)
   if (!evidence.testsRun) {
     return 'APPROVED_WITH_NOTES';
   }
@@ -192,7 +286,7 @@ function generateSummary(
     case 'NEEDS_FIXES':
       return `Implementation of "${title}" requires fixes before approval. See required fixes for details.`;
     case 'REJECTED':
-      return `Implementation of "${title}" is rejected. The approach violates requirements.`;
+      return `Implementation of "${title}" is rejected. The approach violates requirements or evidence is insufficient.`;
     case 'BLOCKED':
       return `Implementation of "${title}" is blocked. Critical issues prevent approval.`;
     default:

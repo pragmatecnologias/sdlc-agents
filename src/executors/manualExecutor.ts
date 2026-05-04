@@ -8,6 +8,8 @@ import { ExecutorAdapter, ExecutionRequest, ExecutorResult, createExecutorResult
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getRunPaths, saveComponentArtifact } from '../workflow/checkpoint.js';
+import { getChangedFiles, captureSnapshot, saveGitDiffToFile, saveGitStatusToFile } from '../tools/gitTool.js';
+import { validatePaths, PathValidationResult } from '../tools/pathValidator.js';
 
 export class ManualExecutor implements ExecutorAdapter {
   name = 'manual';
@@ -117,27 +119,122 @@ sea after-execution ${this.runId} --component ${request.componentName}
 }
 
 /**
- * Capture evidence after manual execution
+ * Capture evidence after manual execution.
+ *
+ * This function is called when the human operator signals they have completed
+ * manual work for a component. It captures:
+ *   - A git snapshot (branch, commit, dirty flag, changed files)
+ *   - The full git diff (staged + unstaged)
+ *   - The git status
+ *   - Path validation against forbidden/protected paths
+ *
+ * All evidence is saved to the component artifact directory.
  */
 export async function captureManualExecutionEvidence(
   runId: string,
   componentName: string,
+  componentPath: string,
+  forbiddenPaths: string[],
+  protectedPaths: string[],
   baseDir: string = '.sea'
 ): Promise<{
   changedFiles: string[];
   diff: string;
   gitStatus: string;
+  validation: PathValidationResult | null;
+  snapshotPath: string;
+  diffPath: string;
+  statusPath: string;
+  validationPath: string;
 }> {
   const paths = getRunPaths(runId, baseDir);
   const componentDir = path.join(paths.componentsDir, componentName);
 
-  // Read execution request to get original request
-  const requestPath = path.join(componentDir, 'execution-request.md');
+  // Ensure the component artifact directory exists
+  await fs.mkdir(componentDir, { recursive: true });
 
-  // Return evidence that needs to be captured by git tool
+  const snapshotPath = path.join(componentDir, 'post-execution-snapshot.json');
+  const diffPath = path.join(componentDir, 'post-execution.diff');
+  const statusPath = path.join(componentDir, 'post-execution-status.json');
+  const validationPath = path.join(componentDir, 'path-validation.json');
+
+  // 1. Capture git snapshot (branch, commit hash, dirty, changed files)
+  let snapshot;
+  let changedFiles: string[] = [];
+  try {
+    snapshot = await captureSnapshot(componentPath);
+    changedFiles = snapshot.changedFiles;
+
+    // Save snapshot to file
+    await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    // Write an error snapshot so downstream agents know what happened
+    const errorSnapshot = {
+      error: errorMsg,
+      branch: 'unknown',
+      commitHash: 'unknown',
+      isDirty: false,
+      changedFiles: [] as string[],
+    };
+    await fs.writeFile(snapshotPath, JSON.stringify(errorSnapshot, null, 2), 'utf-8');
+  }
+
+  // 2. Capture full git diff and save to file
+  let diffContent = '';
+  try {
+    await saveGitDiffToFile(componentPath, diffPath);
+    diffContent = await fs.readFile(diffPath, 'utf-8');
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    diffContent = `[ERROR] Could not capture diff: ${errorMsg}`;
+    await fs.writeFile(diffPath, diffContent, 'utf-8');
+  }
+
+  // 3. Capture git status and save to file
+  let gitStatusContent = '';
+  try {
+    await saveGitStatusToFile(componentPath, statusPath);
+    gitStatusContent = await fs.readFile(statusPath, 'utf-8');
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    gitStatusContent = `{"error": "${errorMsg}"}`;
+    await fs.writeFile(statusPath, gitStatusContent, 'utf-8');
+  }
+
+  // 4. Run path validation against forbidden/protected paths
+  let validation: PathValidationResult | null = null;
+  if (changedFiles.length > 0) {
+    try {
+      validation = validatePaths(changedFiles, {
+        allowedPaths: [],  // Empty = all paths allowed (component-scoped)
+        protectedPaths: protectedPaths || [],
+        forbiddenPaths: forbiddenPaths || [],
+      });
+      await fs.writeFile(validationPath, JSON.stringify(validation, null, 2), 'utf-8');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorValidation = {
+        allowedChanges: changedFiles,
+        protectedViolations: [],
+        forbiddenViolations: [],
+        outOfScopeChanges: [],
+        status: 'warning' as const,
+        error: errorMsg,
+      };
+      validation = errorValidation;
+      await fs.writeFile(validationPath, JSON.stringify(errorValidation, null, 2), 'utf-8');
+    }
+  }
+
   return {
-    changedFiles: [],
-    diff: '',
-    gitStatus: '',
+    changedFiles,
+    diff: diffContent,
+    gitStatus: gitStatusContent,
+    validation,
+    snapshotPath,
+    diffPath,
+    statusPath,
+    validationPath,
   };
 }

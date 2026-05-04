@@ -73,7 +73,7 @@ export class WorkflowRunner {
     workspaceConfig: WorkspaceState['workspace'],
     steps: WorkflowStep[]
   ): Promise<WorkflowResult> {
-    const initialState = createInitialWorkspaceState(runId, userRequest, workspaceConfig);
+    const initialState = createInitialWorkspaceState(runId, userRequest, workspaceConfig, this.options.baseDir);
     return this.execute(initialState, steps);
   }
 
@@ -87,6 +87,8 @@ export class WorkflowRunner {
     }
 
     const state = await loadCheckpoint(runId, latestCheckpoint.name.replace('.json', ''), this.options.baseDir);
+    // Restore baseDir from options (not stored in checkpoint)
+    state.baseDir = this.options.baseDir;
     logger.info(`Resuming from checkpoint: ${latestCheckpoint.name}`);
 
     // Find the next step to execute
@@ -239,7 +241,7 @@ export class WorkflowRunner {
         currentState = { ...currentState, ...result.state, updatedAt: new Date().toISOString() };
       }
     }
-    return { type: 'continue', state: {} };
+    return { type: 'continue', state: currentState };
   }
 
   /**
@@ -297,7 +299,7 @@ export class WorkflowRunner {
       attempts++;
     }
 
-    return { type: 'continue', state: {} };
+    return { type: 'continue', state: currentState };
   }
 
   /**

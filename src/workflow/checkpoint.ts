@@ -179,9 +179,9 @@ export async function saveComponentArtifact(
   state: WorkspaceState,
   componentName: string,
   name: string,
-  content: string,
-  baseDir: string = '.sea'
+  content: string
 ): Promise<void> {
+  const baseDir = state.baseDir;
   const paths = getRunPaths(state.runId, baseDir);
   const componentDir = path.join(paths.componentsDir, componentName);
   const artifactPath = path.join(componentDir, name);

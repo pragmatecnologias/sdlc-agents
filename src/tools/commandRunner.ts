@@ -3,7 +3,7 @@
  * Executes shell commands and captures output
  */
 
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createLogger } from '../utils/logger.js';
@@ -17,6 +17,8 @@ export interface CommandOptions {
   env?: Record<string, string>;
   shell?: boolean;
   continueOnError?: (result: CommandResult) => boolean;
+  autoSave?: boolean; // automatically save stdout/stderr to files
+  saveDir?: string; // directory to save output files when autoSave is true
 }
 
 /**
@@ -27,6 +29,7 @@ export async function runCommand(
   options: CommandOptions = {}
 ): Promise<CommandResult> {
   const startedAt = new Date().toISOString();
+  const startTime = Date.now();
   const component = options.cwd || 'unknown';
   const commandName = path.basename(command.split(' ')[0]);
 
@@ -34,24 +37,38 @@ export async function runCommand(
     const {
       cwd = process.cwd(),
       timeout = 120000, // 2 minute default
-      env = process.env,
+      env = process.env as Record<string, string>,
       shell = true,
+      autoSave = false,
+      saveDir,
     } = options;
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let killed = false;
 
-    const proc = spawn(command, [], {
+    const proc: ChildProcess = spawn(command, [], {
       cwd,
       env,
       shell,
-      timeout,
+      // Do NOT pass timeout to spawn -- we handle it ourselves with setTimeout
     });
 
+    // Single timeout mechanism using setTimeout only
     const timer = setTimeout(() => {
       timedOut = true;
+      killed = true;
       proc.kill('SIGTERM');
+
+      // Force kill after grace period if SIGTERM didn't work
+      setTimeout(() => {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // Process already exited
+        }
+      }, 5000);
     }, timeout);
 
     proc.stdout?.on('data', (data) => {
@@ -65,6 +82,7 @@ export async function runCommand(
     proc.on('close', (code) => {
       clearTimeout(timer);
       const finishedAt = new Date().toISOString();
+      const durationMs = Date.now() - startTime;
 
       let status: CommandStatus;
       if (timedOut) {
@@ -76,38 +94,79 @@ export async function runCommand(
         status = 'failed';
       }
 
-      resolve({
+      let stdoutPath = '';
+      let stderrPath = '';
+
+      const exitCode = timedOut ? -1 : (code ?? 0);
+
+      const result: CommandResult = {
         component,
         commandName,
         command,
-        exitCode: code ?? (timedOut ? -1 : 0),
+        exitCode,
         status,
-        stdoutPath: '', // Would be set by caller
-        stderrPath: '',
-        durationMs: 0, // Would calculate from timestamps
+        stdout,
+        stderr,
+        stdoutPath,
+        stderrPath,
+        durationMs,
         startedAt,
         finishedAt,
-      });
+      };
+
+      if (autoSave) {
+        const outputDir = saveDir || cwd;
+        saveCommandOutput(result, outputDir).then((paths) => {
+          result.stdoutPath = paths.stdoutPath;
+          result.stderrPath = paths.stderrPath;
+          resolve(result);
+        }).catch((err) => {
+          logger.error(`Failed to auto-save command output for: ${command}`, err);
+          // Resolve with empty paths rather than failing
+          resolve(result);
+        });
+      } else {
+        resolve(result);
+      }
     });
 
     proc.on('error', (error) => {
       clearTimeout(timer);
       const finishedAt = new Date().toISOString();
+      const durationMs = Date.now() - startTime;
 
-      resolve({
+      stderr += `\n[ERROR] ${error.message}`;
+
+      const result: CommandResult = {
         component,
         commandName,
         command,
         exitCode: -1,
         status: 'failed',
+        stdout,
+        stderr,
         stdoutPath: '',
         stderrPath: '',
-        durationMs: 0,
+        durationMs,
         startedAt,
         finishedAt,
-      });
+      };
 
       logger.error(`Command failed: ${command}`, error);
+
+      if (autoSave) {
+        const outputDir = saveDir || cwd;
+        saveCommandOutput(result, outputDir).then((paths) => {
+          result.stdoutPath = paths.stdoutPath;
+          result.stderrPath = paths.stderrPath;
+          resolve(result);
+        }).catch((err) => {
+          logger.error(`Failed to auto-save error output for: ${command}`, err);
+          resolve(result);
+        });
+      } else {
+        resolve(result);
+      }
     });
   });
 }
@@ -135,16 +194,9 @@ export async function runCommands(
   return results;
 }
 
-export interface ContinueOnErrorFn {
-  (result: CommandResult): boolean;
-}
-
-export interface RunCommandsOptions extends CommandOptions {
-  continueOnError?: ContinueOnErrorFn;
-}
-
 /**
- * Save command output to files and return paths
+ * Save command output to files and return paths.
+ * Uses stdout and stderr directly from the CommandResult.
  */
 export async function saveCommandOutput(
   result: CommandResult,
@@ -152,14 +204,17 @@ export async function saveCommandOutput(
 ): Promise<{ stdoutPath: string; stderrPath: string }> {
   await fs.mkdir(outputDir, { recursive: true });
 
-  const stdoutPath = result.stdoutPath || path.join(outputDir, `${result.commandName}-stdout.txt`);
-  const stderrPath = result.stderrPath || path.join(outputDir, `${result.commandName}-stderr.txt`);
+  const stdoutPath = path.join(outputDir, `${result.commandName}-stdout.txt`);
+  const stderrPath = path.join(outputDir, `${result.commandName}-stderr.txt`);
 
-  // If result has inline stdout/stderr (not paths), save to files
-  if (result.stdoutPath === '' || result.stdoutPath === undefined) {
-    await fs.writeFile(stdoutPath, (result as any).stdout || '', 'utf-8');
-    await fs.writeFile(stderrPath, (result as any).stderr || '', 'utf-8');
-  }
+  const stdoutContent = result.stdout ?? '';
+  const stderrContent = result.stderr ?? '';
+
+  await fs.writeFile(stdoutPath, stdoutContent, 'utf-8');
+  await fs.writeFile(stderrPath, stderrContent, 'utf-8');
+
+  logger.debug(`Saved stdout to ${stdoutPath} (${stdoutContent.length} chars)`);
+  logger.debug(`Saved stderr to ${stderrPath} (${stderrContent.length} chars)`);
 
   return { stdoutPath, stderrPath };
 }

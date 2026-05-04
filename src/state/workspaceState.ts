@@ -67,6 +67,7 @@ export interface WorkspaceState {
   createdAt: string;
   updatedAt: string;
   userRequest: string;
+  baseDir: string;
   workspace: WorkspaceConfig;
   projectProfile: ProjectProfile | null;
   memoryContext: string | null;
@@ -87,15 +88,21 @@ export interface WorkspaceState {
   finalDecision: FinalDecisionReport | null;
   artifacts: ArtifactRecord[];
   errors: WorkflowError[];
+  runStatus: RunStatus;
+  currentPhase: string;
 }
 
 export type RunStatus =
   | 'initialized'
-  | 'running'
+  | 'planning'
   | 'awaiting_approval'
-  | 'paused'
+  | 'awaiting_manual_execution'
+  | 'executing'
+  | 'verifying'
+  | 'reviewing'
   | 'completed'
   | 'failed'
+  | 'blocked'
   | 'aborted';
 
 /**
@@ -310,7 +317,8 @@ export type ComponentRole =
 export function createInitialWorkspaceState(
   runId: string,
   userRequest: string,
-  workspace: WorkspaceConfig
+  workspace: WorkspaceConfig,
+  baseDir: string
 ): WorkspaceState {
   const now = new Date().toISOString();
   return {
@@ -318,6 +326,7 @@ export function createInitialWorkspaceState(
     createdAt: now,
     updatedAt: now,
     userRequest,
+    baseDir,
     workspace,
     projectProfile: null,
     memoryContext: null,
@@ -338,5 +347,7 @@ export function createInitialWorkspaceState(
     finalDecision: null,
     artifacts: [],
     errors: [],
+    runStatus: 'initialized',
+    currentPhase: '',
   };
 }

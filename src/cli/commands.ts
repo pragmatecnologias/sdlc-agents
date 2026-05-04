@@ -7,15 +7,65 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import {
   WorkspaceConfig,
+  ComponentConfig,
+  ComponentState,
+  ExecutorResult,
+  VerificationSummary,
+  CommandResult,
   createDefaultApprovalPolicy,
   createDefaultQualityGates,
 } from '../state/schemas.js';
+import { WorkspaceState } from '../state/workspaceState.js';
 import { createLogger } from '../utils/logger.js';
 import { WorkflowRunner, createSeaWorkflowSteps } from '../workflow/runner.js';
-import { loadCheckpoint, getLatestCheckpoint } from '../workflow/checkpoint.js';
+import { loadState, saveState, saveComponentArtifact, getRunPaths } from '../workflow/checkpoint.js';
 import { createSeaAgents } from '../agents/index.js';
+import {
+  captureSnapshot,
+  getChangedFiles,
+  saveGitDiffToFile,
+  saveGitStatusToFile,
+} from '../tools/gitTool.js';
+import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
+import { runCommand } from '../tools/commandRunner.js';
 
 const logger = createLogger('CLI');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the base directory (.sea parent) from a workspace.json path.
+ * For example, given '/project/.sea/workspace.json' returns '/project'.
+ * Falls back to '.' if the path doesn't contain '.sea'.
+ */
+function resolveBaseDir(workspacePath: string): string {
+  const seaDir = path.dirname(workspacePath); // e.g. /project/.sea
+  const baseDir = path.dirname(seaDir);       // e.g. /project
+  // Sanity: if dirname(seaDir) === seaDir (root) or doesn't make sense, use cwd
+  return baseDir && baseDir !== seaDir ? baseDir : process.cwd();
+}
+
+/**
+ * Derive the .sea directory path from a workspace.json path.
+ * e.g. '/project/.sea/workspace.json' -> '/project/.sea'
+ */
+function resolveSeaDir(workspacePath: string): string {
+  return path.dirname(workspacePath);
+}
+
+/**
+ * Resolve the baseDir for runs relative to a workspace.json path.
+ * This is the parent directory of the .sea directory.
+ */
+function resolveRunBaseDir(workspacePath: string): string {
+  return path.dirname(path.dirname(workspacePath));
+}
+
+// ---------------------------------------------------------------------------
+// Command Registration
+// ---------------------------------------------------------------------------
 
 /**
  * Register all CLI commands
@@ -68,8 +118,9 @@ export function registerCommands(program: Command): void {
     .argument('<runId>', 'Run ID')
     .requiredOption('-c, --component <name>', 'Component name')
     .option('-o, --output <path>', 'Output file')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
     .action(async (runId, options) => {
-      await handleRequest(runId, options.component, options.output);
+      await handleRequest(runId, options.component, options.output, options.workspace);
     });
 
   // after-execution command
@@ -78,8 +129,9 @@ export function registerCommands(program: Command): void {
     .description('Capture evidence after manual execution')
     .argument('<runId>', 'Run ID')
     .requiredOption('-c, --component <name>', 'Component name')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
     .action(async (runId, options) => {
-      await handleAfterExecution(runId, options.component);
+      await handleAfterExecution(runId, options.component, options.workspace);
     });
 
   // verify command
@@ -87,8 +139,9 @@ export function registerCommands(program: Command): void {
     .command('verify')
     .description('Run verification for affected components')
     .argument('<runId>', 'Run ID')
-    .action(async (runId) => {
-      await handleVerify(runId);
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (runId, options) => {
+      await handleVerify(runId, options.workspace);
     });
 
   // resume command
@@ -96,8 +149,9 @@ export function registerCommands(program: Command): void {
     .command('resume')
     .description('Resume from latest checkpoint')
     .argument('<runId>', 'Run ID')
-    .action(async (runId) => {
-      await handleResume(runId);
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (runId, options) => {
+      await handleResume(runId, options.workspace);
     });
 
   // report command
@@ -105,8 +159,9 @@ export function registerCommands(program: Command): void {
     .command('report')
     .description('Show final report for a run')
     .argument('<runId>', 'Run ID')
-    .action(async (runId) => {
-      await handleReport(runId);
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (runId, options) => {
+      await handleReport(runId, options.workspace);
     });
 
   // memory command
@@ -119,15 +174,41 @@ export function registerCommands(program: Command): void {
     });
 }
 
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
 async function handleInit(workspaceName: string, seaPath: string): Promise<void> {
   logger.info(`Initializing workspace: ${workspaceName}`);
+
+  const sampleComponents: ComponentConfig[] = [
+    {
+      name: 'example-frontend',
+      path: './packages/frontend',
+      kind: 'frontend',
+      role: 'application',
+      technology: 'typescript',
+      framework: 'react',
+      packageManager: 'npm',
+      commands: {
+        install: 'npm install',
+        lint: 'npm run lint',
+        typecheck: 'npm run typecheck',
+        test: 'npm test',
+        build: 'npm run build',
+      },
+      dependencies: ['example-shared'],
+      protectedPaths: ['**/config/**'],
+      forbiddenPaths: ['**/.env*'],
+    },
+  ];
 
   const workspaceConfig: WorkspaceConfig = {
     workspaceName,
     defaultExecutor: 'manual',
     approvalPolicy: createDefaultApprovalPolicy(),
     qualityGates: createDefaultQualityGates(),
-    components: [],
+    components: sampleComponents,
     memory: {
       enabled: true,
       path: path.join(seaPath, 'engineering_memory.md'),
@@ -152,13 +233,19 @@ async function handleInit(workspaceName: string, seaPath: string): Promise<void>
     'utf-8'
   );
 
-  console.log(`✓ Workspace initialized at ${seaPath}`);
+  console.log(`Workspace initialized at ${seaPath}`);
   console.log(`  - workspace.json created`);
   console.log(`  - engineering_memory.md created`);
+  console.log(`  - ${sampleComponents.length} sample component(s) configured`);
   console.log(`\nNext steps:`);
-  console.log(`  1. Configure components in ${configPath}`);
-  console.log(`  2. Run: sea run "<request>" --workspace ${configPath}`);
+  console.log(`  1. Review and configure components in ${configPath}`);
+  console.log(`  2. Run: sea plan "<request>" --workspace ${configPath}`);
+  console.log(`  3. Or run the full workflow: sea run "<request>" --workspace ${configPath}`);
 }
+
+// ---------------------------------------------------------------------------
+// plan
+// ---------------------------------------------------------------------------
 
 async function handlePlan(request: string, workspacePath: string): Promise<void> {
   logger.info(`Running plan for: ${request}`);
@@ -172,17 +259,17 @@ async function handlePlan(request: string, workspacePath: string): Promise<void>
     const runId = `run-${Date.now()}`;
 
     // Get actual workspace path (parent of .sea directory)
-    const seaPath = path.dirname(workspacePath);
+    const baseDir = resolveBaseDir(workspacePath);
 
     // Fix workspaceConfig to use actual path as workspaceName
     const workspaceConfigForRun = {
       ...workspaceConfig,
-      workspaceName: seaPath, // Pass actual path for discovery
+      workspaceName: baseDir,
     };
 
     // Create agents
     const agents = createSeaAgents({
-      memoryPath: path.join(seaPath, 'engineering_memory.md'),
+      memoryPath: workspaceConfig.memory?.path || path.join(resolveSeaDir(workspacePath), 'engineering_memory.md'),
     });
 
     // Create workflow steps (planning phases only)
@@ -203,10 +290,11 @@ async function handlePlan(request: string, workspacePath: string): Promise<void>
     });
 
     // Create workflow runner
+    const seaDir = resolveSeaDir(workspacePath);
     const runner = new WorkflowRunner({
-      baseDir: seaPath,
+      baseDir: seaDir,
       onPhaseComplete: (phase) => {
-        console.log(`  ✓ ${phase} completed`);
+        console.log(`  [done] ${phase} completed`);
       },
     });
 
@@ -217,17 +305,26 @@ async function handlePlan(request: string, workspacePath: string): Promise<void>
     const result = await runner.run(runId, request, workspaceConfigForRun, planningSteps);
 
     if (result.success) {
-      console.log(`\n✓ Planning completed successfully`);
+      console.log(`\nPlanning completed successfully`);
       console.log(`  Run ID: ${runId}`);
-      console.log(`  Phases: ${result.completedPhases.join(' → ')}`);
+      console.log(`  Phases: ${result.completedPhases.join(' -> ')}`);
+      console.log(`\nNext steps:`);
+      console.log(`  1. Review the plan in ${seaDir}/runs/${runId}/state.json`);
+      console.log(`  2. Execute components: sea request ${runId} -c <component>`);
+      console.log(`  3. After execution: sea after-execution ${runId} -c <component>`);
+      console.log(`  4. Verify: sea verify ${runId}`);
     } else {
-      console.log(`\n✗ Planning failed: ${result.error}`);
+      console.log(`\nPlanning failed: ${result.error}`);
     }
   } catch (error) {
     logger.error(`Planning failed: ${error}`);
     console.error(`Error: ${error}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
 
 async function handleRun(
   request: string,
@@ -238,25 +335,25 @@ async function handleRun(
 
   try {
     // Load workspace config
-    const configPath = workspacePath;
-    const configContent = await fs.readFile(configPath, 'utf-8');
+    const configContent = await fs.readFile(workspacePath, 'utf-8');
     const workspaceConfig = JSON.parse(configContent) as WorkspaceConfig;
 
     // Generate run ID
     const runId = `run-${Date.now()}`;
 
     // Get actual workspace path (parent of .sea directory)
-    const seaPath = path.dirname(workspacePath);
+    const baseDir = resolveBaseDir(workspacePath);
+    const seaDir = resolveSeaDir(workspacePath);
 
     // Fix workspaceConfig to use actual path as workspaceName
     const workspaceConfigForRun = {
       ...workspaceConfig,
-      workspaceName: seaPath,
+      workspaceName: baseDir,
     };
 
     // Create agents
     const agents = createSeaAgents({
-      memoryPath: workspacePath, // Keep original for memory
+      memoryPath: workspaceConfig.memory?.path || path.join(seaDir, 'engineering_memory.md'),
     });
 
     // Create workflow steps
@@ -264,9 +361,9 @@ async function handleRun(
 
     // Create workflow runner
     const runner = new WorkflowRunner({
-      baseDir: seaPath,
+      baseDir: seaDir,
       onPhaseComplete: (phase, state) => {
-        console.log(`  ✓ ${phase} completed`);
+        console.log(`  [done] ${phase} completed`);
       },
       onHumanApproval: async () => {
         if (options.skipApproval) {
@@ -285,11 +382,39 @@ async function handleRun(
     const result = await runner.run(runId, request, workspaceConfigForRun, steps);
 
     if (result.success) {
-      console.log(`\n✓ Workflow completed successfully`);
+      const state = result.state as WorkspaceState;
+      console.log(`\nWorkflow completed successfully`);
       console.log(`  Run ID: ${runId}`);
       console.log(`  Phases completed: ${result.completedPhases.join(', ')}`);
+
+      // If executor is manual, guide the user to the next steps
+      if (options.executor === 'manual' || workspaceConfig.defaultExecutor === 'manual') {
+        if (state.runStatus === 'awaiting_manual_execution' || state.componentStates) {
+          const componentsToExecute = Object.entries(state.componentStates || {})
+            .filter(([, cs]) => cs.executionRequestPath && cs.executorResult?.status === 'manual_required')
+            .map(([name]) => name);
+
+          if (componentsToExecute.length > 0) {
+            console.log(`\n--- Manual Execution Required ---`);
+            console.log(`The following components need manual execution:\n`);
+            for (const comp of componentsToExecute) {
+              console.log(`  ${comp}:`);
+              console.log(`    1. View execution request:  sea request ${runId} -c ${comp}`);
+              console.log(`    2. Execute the changes in your editor / executor`);
+              console.log(`    3. Capture evidence:        sea after-execution ${runId} -c ${comp}`);
+              console.log();
+            }
+            console.log(`After all components are done:`);
+            console.log(`  sea verify ${runId}`);
+            console.log(`  sea report ${runId}`);
+          } else {
+            console.log(`\nNo components require manual execution.`);
+            console.log(`Run: sea verify ${runId}`);
+          }
+        }
+      }
     } else {
-      console.log(`\n✗ Workflow failed: ${result.error}`);
+      console.log(`\nWorkflow failed: ${result.error}`);
       console.log(`  Completed phases: ${result.completedPhases.join(', ')}`);
     }
   } catch (error) {
@@ -298,84 +423,458 @@ async function handleRun(
   }
 }
 
-async function handleRequest(runId: string, component: string, output?: string): Promise<void> {
+// ---------------------------------------------------------------------------
+// request
+// ---------------------------------------------------------------------------
+
+async function handleRequest(runId: string, component: string, output?: string, workspacePath?: string): Promise<void> {
   logger.info(`Showing request for ${component} in run ${runId}`);
-  console.log('Request command not yet implemented');
-  console.log(`Run: ${runId}`);
-  console.log(`Component: ${component}`);
-}
 
-async function handleAfterExecution(runId: string, component: string): Promise<void> {
-  logger.info(`Capturing evidence for ${component} in run ${runId}`);
-  console.log('After-execution command not yet implemented');
-  console.log(`Run: ${runId}`);
-  console.log(`Component: ${component}`);
-}
-
-async function handleVerify(runId: string): Promise<void> {
-  logger.info(`Verifying run ${runId}`);
-  console.log('Verify command not yet implemented');
-  console.log(`Run: ${runId}`);
-}
-
-async function handleResume(runId: string): Promise<void> {
-  logger.info(`Resuming run ${runId}`);
-
+  const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
+  let state: WorkspaceState;
   try {
-    // Find the workspace path from the run
-    // Assume runs are in .sea/runs/{runId}
-    const baseDir = '.sea';
-    const runPath = path.join(baseDir, 'runs', runId);
+    state = await loadState(runId, baseDir);
+  } catch {
+    console.error(`Run ${runId} not found in ${baseDir}.`);
+    process.exit(1);
+  }
 
-    // Check if run exists
-    const statePath = path.join(runPath, 'state.json');
-    try {
-      await fs.access(statePath);
-    } catch {
-      console.error(`Run ${runId} not found`);
-      return;
-    }
+  // Find component state
+  const componentState = state.componentStates[component];
+  if (!componentState) {
+    const available = Object.keys(state.componentStates).join(', ');
+    console.error(`Component "${component}" not found in run ${runId}.`);
+    console.error(`Available components: ${available || '(none)'}`);
+    process.exit(1);
+  }
 
-    // Load current state to get workspace config
-    const stateContent = await fs.readFile(statePath, 'utf-8');
-    const state = JSON.parse(stateContent) as { workspace?: { workspaceName: string } };
+  // Check for execution request path
+  if (!componentState.executionRequestPath) {
+    console.error(`No execution request found for component "${component}".`);
+    console.error(`The component may not have been planned for execution yet.`);
+    process.exit(1);
+  }
 
-    // Create agents and steps
-    const agents = createSeaAgents({
-      memoryPath: path.join(baseDir, 'engineering_memory.md'),
-    });
-    const steps = createSeaWorkflowSteps(agents);
+  // Resolve execution request path relative to the runs directory
+  const runPaths = getRunPaths(runId, baseDir);
+  const requestFilePath = path.resolve(runPaths.runDir, componentState.executionRequestPath);
 
-    // Create runner and resume
-    const runner = new WorkflowRunner({
-      baseDir,
-      onPhaseComplete: (phase) => {
-        console.log(`  ✓ ${phase} completed`);
-      },
-    });
+  let requestContent: string;
+  try {
+    requestContent = await fs.readFile(requestFilePath, 'utf-8');
+  } catch {
+    console.error(`Execution request file not found at: ${requestFilePath}`);
+    process.exit(1);
+  }
 
-    console.log(`Resuming run: ${runId}\n`);
+  // Print to console
+  console.log(`=== Execution Request: ${component} ===`);
+  console.log(`Run: ${runId}`);
+  console.log(`Path: ${componentState.componentPath}`);
+  console.log(`Change Role: ${componentState.changeRole}`);
+  console.log(`=====================================\n`);
+  console.log(requestContent);
 
-    const result = await runner.resume(runId, steps);
-
-    if (result.success) {
-      console.log(`\n✓ Resume completed successfully`);
-      console.log(`  Completed phases: ${result.completedPhases.join(' → ')}`);
-    } else {
-      console.log(`\n✗ Resume failed: ${result.error}`);
-    }
-  } catch (error) {
-    logger.error(`Resume failed: ${error}`);
-    console.error(`Error: ${error}`);
+  // Write to output file if specified
+  if (output) {
+    await fs.writeFile(output, requestContent, 'utf-8');
+    console.log(`\nExecution request written to: ${output}`);
   }
 }
 
-async function handleReport(runId: string): Promise<void> {
+// ---------------------------------------------------------------------------
+// after-execution
+// ---------------------------------------------------------------------------
+
+async function handleAfterExecution(runId: string, component: string, workspacePath?: string): Promise<void> {
+  logger.info(`Capturing evidence for ${component} in run ${runId}`);
+
+  // Load state
+  const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
+  let state: WorkspaceState;
+  try {
+    state = await loadState(runId, baseDir);
+  } catch {
+    console.error(`Run ${runId} not found. Checked: ${baseDir}`);
+    process.exit(1);
+  }
+
+  // Find component config from workspace.components
+  const componentConfig = state.workspace.components.find((c: ComponentConfig) => c.name === component);
+  if (!componentConfig) {
+    const available = state.workspace.components.map((c: ComponentConfig) => c.name).join(', ');
+    console.error(`Component "${component}" not found in workspace configuration.`);
+    console.error(`Available components: ${available || '(none)'}`);
+    process.exit(1);
+  }
+
+  // Find component state
+  const componentState = state.componentStates[component];
+  if (!componentState) {
+    const available = Object.keys(state.componentStates).join(', ');
+    console.error(`Component "${component}" has no state in run ${runId}.`);
+    console.error(`Components with state: ${available || '(none)'}`);
+    process.exit(1);
+  }
+
+  const componentPath = path.resolve(componentConfig.path);
+  const runPaths = getRunPaths(runId, baseDir);
+  const componentDir = path.join(runPaths.componentsDir, component);
+  await fs.mkdir(componentDir, { recursive: true });
+
+  // 1. Capture snapshot (BEFORE state) or use saved gitStatusBeforePath
+  console.log(`\nCapturing evidence for component: ${component}`);
+  console.log(`  Component path: ${componentPath}`);
+
+  let beforeSnapshot;
+  if (componentState.gitStatusBeforePath) {
+    const beforePath = path.resolve(runPaths.runDir, componentState.gitStatusBeforePath);
+    try {
+      const beforeContent = await fs.readFile(beforePath, 'utf-8');
+      beforeSnapshot = JSON.parse(beforeContent);
+      console.log(`  Loaded saved BEFORE state from: ${componentState.gitStatusBeforePath}`);
+    } catch {
+      console.log(`  Could not load saved BEFORE state, capturing fresh snapshot`);
+      beforeSnapshot = await captureSnapshot(componentPath);
+    }
+  } else {
+    beforeSnapshot = await captureSnapshot(componentPath);
+    console.log(`  Captured fresh snapshot as BEFORE state`);
+  }
+
+  // 2. Get changed files
+  const changedFiles = await getChangedFiles(componentPath);
+  console.log(`  Changed files: ${changedFiles.length}`);
+
+  if (changedFiles.length > 0) {
+    console.log(`    ${changedFiles.map((f) => `  - ${f}`).join('\n')}`);
+  }
+
+  // 3. Save diff
+  const diffPath = path.join(componentDir, 'diff.patch');
+  await saveGitDiffToFile(componentPath, diffPath);
+  console.log(`  Diff saved to: ${diffPath}`);
+
+  // 4. Save git status (AFTER)
+  const statusPath = path.join(componentDir, 'git-status-after.json');
+  await saveGitStatusToFile(componentPath, statusPath);
+  console.log(`  Git status saved to: ${statusPath}`);
+
+  // 5. Validate paths
+  const pathPolicy: PathPolicy = {
+    allowedPaths: componentConfig.protectedPaths || [],
+    protectedPaths: [
+      ...(componentConfig.protectedPaths || []),
+      ...(state.workspace.globalProtectedPaths || []),
+    ],
+    forbiddenPaths: [
+      ...(componentConfig.forbiddenPaths || []),
+    ],
+  };
+
+  const validation = validatePaths(changedFiles, pathPolicy);
+
+  // 6. Build executor result
+  const now = new Date().toISOString();
+  const executorResult: ExecutorResult = {
+    executor: 'manual',
+    status: changedFiles.length > 0 ? 'completed' : 'completed',
+    changedFiles,
+    diffPath: path.relative(runPaths.runDir, diffPath),
+    startedAt: componentState.executorResult?.startedAt || now,
+    finishedAt: now,
+    notes: [
+      `Captured ${changedFiles.length} changed files`,
+      validation.status !== 'clean'
+        ? `Path validation status: ${validation.status}`
+        : 'Path validation: clean',
+    ],
+  };
+
+  // 7. Update component state
+  const updatedComponentState: ComponentState = {
+    ...componentState,
+    changedFiles,
+    diffPath: path.relative(runPaths.runDir, diffPath),
+    gitStatusAfterPath: path.relative(runPaths.runDir, statusPath),
+    forbiddenPathViolations: validation.forbiddenViolations,
+    protectedPathViolations: validation.protectedViolations,
+    executorResult,
+    dirtyAfter: changedFiles.length > 0,
+    componentDecision: changedFiles.length > 0 ? 'implemented' : componentState.componentDecision,
+  };
+
+  state.componentStates[component] = updatedComponentState;
+
+  // Save updated state
+  await saveState(state, baseDir);
+
+  // Print summary
+  console.log(`\n--- Evidence Capture Summary ---`);
+  console.log(`  Component:   ${component}`);
+  console.log(`  Run:         ${runId}`);
+  console.log(`  Changed:     ${changedFiles.length} file(s)`);
+  console.log(`  Dirty after: ${updatedComponentState.dirtyAfter}`);
+  console.log(`  Decision:    ${updatedComponentState.componentDecision}`);
+  console.log(`  Validation:  ${validation.status}`);
+
+  if (validation.forbiddenViolations.length > 0) {
+    console.log(`\n  FORBIDDEN path violations:`);
+    for (const f of validation.forbiddenViolations) {
+      console.log(`    - ${f}`);
+    }
+  }
+
+  if (validation.protectedViolations.length > 0) {
+    console.log(`\n  PROTECTED path violations:`);
+    for (const p of validation.protectedViolations) {
+      console.log(`    - ${p}`);
+    }
+  }
+
+  console.log(`\nArtifacts saved to: ${componentDir}`);
+  console.log(`  - diff.patch`);
+  console.log(`  - git-status-after.json`);
+}
+
+// ---------------------------------------------------------------------------
+// verify
+// ---------------------------------------------------------------------------
+
+async function handleVerify(runId: string, workspacePath?: string): Promise<void> {
+  logger.info(`Verifying run ${runId}`);
+
+  const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
+  let state: WorkspaceState;
+  try {
+    state = await loadState(runId, baseDir);
+  } catch {
+    console.error(`Run ${runId} not found. Checked: ${baseDir}`);
+    process.exit(1);
+  }
+
+  const runPaths = getRunPaths(runId, baseDir);
+
+  // Find components that need verification
+  const componentsToVerify = Object.entries(state.componentStates)
+    .filter(([, cs]) => cs.changeRole === 'modify' || cs.changeRole === 'verify_only');
+
+  if (componentsToVerify.length === 0) {
+    console.log(`No components require verification for run ${runId}.`);
+    return;
+  }
+
+  console.log(`Verifying ${componentsToVerify.length} component(s) for run ${runId}\n`);
+
+  const verificationSummary: VerificationSummary = {
+    overallStatus: 'passed',
+    componentResults: {},
+    totalCommandsRun: 0,
+    totalPassed: 0,
+    totalFailed: 0,
+    testsRun: false,
+    buildsRun: false,
+  };
+
+  for (const [componentName, componentState] of componentsToVerify) {
+    console.log(`--- Verifying: ${componentName} ---`);
+
+    // Find component config for commands
+    const componentConfig = state.workspace.components.find(
+      (c: ComponentConfig) => c.name === componentName
+    );
+
+    if (!componentConfig) {
+      console.log(`  [warn] No component config found, skipping`);
+      continue;
+    }
+
+    const commands = componentConfig.commands;
+    if (!commands) {
+      console.log(`  [warn] No commands configured, skipping`);
+      continue;
+    }
+
+    const componentPath = path.resolve(componentConfig.path);
+    const componentDir = path.join(runPaths.componentsDir, componentName);
+    await fs.mkdir(componentDir, { recursive: true });
+
+    // Build list of verification commands in order
+    const verificationCommands: Array<{ label: string; cmd: string }> = [];
+    if (commands.install) verificationCommands.push({ label: 'install', cmd: commands.install });
+    if (commands.lint) verificationCommands.push({ label: 'lint', cmd: commands.lint });
+    if (commands.typecheck) verificationCommands.push({ label: 'typecheck', cmd: commands.typecheck });
+    if (commands.test) verificationCommands.push({ label: 'test', cmd: commands.test });
+    if (commands.build) verificationCommands.push({ label: 'build', cmd: commands.build });
+
+    let commandsRun = 0;
+    let commandsPassed = 0;
+    let commandsFailed = 0;
+    const commandResults: CommandResult[] = [];
+
+    for (const { label, cmd } of verificationCommands) {
+      console.log(`  Running ${label}: ${cmd}`);
+      try {
+        const result = await runCommand(cmd, {
+          cwd: componentPath,
+          autoSave: true,
+          saveDir: componentDir,
+          timeout: 300000, // 5 minutes
+          continueOnError: () => true,
+        });
+
+        commandsRun++;
+        commandResults.push(result);
+
+        if (result.status === 'passed') {
+          commandsPassed++;
+          console.log(`    [pass] ${label} (${result.durationMs}ms)`);
+        } else {
+          commandsFailed++;
+          console.log(`    [fail] ${label} (${result.durationMs}ms)`);
+          if (result.stderr) {
+            const firstLines = result.stderr.split('\n').slice(0, 5).join('\n    ');
+            console.log(`    stderr: ${firstLines}`);
+          }
+        }
+
+        if (label === 'test') verificationSummary.testsRun = true;
+        if (label === 'build') verificationSummary.buildsRun = true;
+      } catch (error) {
+        commandsRun++;
+        commandsFailed++;
+        console.log(`    [error] ${label}: ${error}`);
+      }
+    }
+
+    const componentStatus = commandsFailed === 0 ? 'passed' : commandsRun === 0 ? 'skipped' : 'failed';
+    verificationSummary.componentResults[componentName] = {
+      status: componentStatus,
+      commandsRun,
+      commandsPassed,
+      commandsFailed,
+    };
+    verificationSummary.totalCommandsRun += commandsRun;
+    verificationSummary.totalPassed += commandsPassed;
+    verificationSummary.totalFailed += commandsFailed;
+
+    // Update component state with command results
+    state.componentStates[componentName] = {
+      ...componentState,
+      commandResults,
+      componentDecision: componentStatus === 'passed' ? 'verified' : 'needs_fix',
+    };
+
+    console.log(`  Result: ${componentStatus} (${commandsPassed}/${commandsRun} passed)`);
+    console.log();
+  }
+
+  // Determine overall status
+  if (verificationSummary.totalFailed > 0) {
+    verificationSummary.overallStatus = verificationSummary.totalPassed > 0 ? 'partial' : 'failed';
+  }
+
+  // Update state
+  state.verification = verificationSummary;
+  state.runStatus = verificationSummary.overallStatus === 'passed' ? 'verifying' : state.runStatus;
+  await saveState(state, baseDir);
+
+  // Print verification summary
+  console.log(`=== Verification Summary ===`);
+  console.log(`  Overall:      ${verificationSummary.overallStatus}`);
+  console.log(`  Commands run: ${verificationSummary.totalCommandsRun}`);
+  console.log(`  Passed:       ${verificationSummary.totalPassed}`);
+  console.log(`  Failed:       ${verificationSummary.totalFailed}`);
+  console.log(`  Tests run:    ${verificationSummary.testsRun ? 'yes' : 'no'}`);
+  console.log(`  Builds run:   ${verificationSummary.buildsRun ? 'yes' : 'no'}`);
+
+  if (verificationSummary.totalFailed > 0) {
+    console.log(`\nComponents with failures:`);
+    for (const [name, result] of Object.entries(verificationSummary.componentResults)) {
+      if (result.status === 'failed') {
+        console.log(`  - ${name}: ${result.commandsFailed}/${result.commandsRun} failed`);
+      }
+    }
+  }
+
+  if (verificationSummary.overallStatus === 'passed') {
+    console.log(`\nNext: sea report ${runId}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resume
+// ---------------------------------------------------------------------------
+
+async function handleResume(runId: string, workspacePath?: string): Promise<void> {
+  logger.info(`Resuming run ${runId}`);
+
+  let baseDir: string | undefined;
+
+  if (workspacePath) {
+    baseDir = resolveSeaDir(workspacePath);
+  } else {
+    // Try to find the run by looking in common locations
+    const candidates = ['.sea'];
+    for (const candidate of candidates) {
+      try {
+        await loadState(runId, candidate);
+        baseDir = candidate;
+        break;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  if (!baseDir) {
+    console.error(`Run ${runId} not found. Use -w to specify workspace path.`);
+    process.exit(1);
+  }
+
+  // Load state to get workspace config and memory path
+  const state = await loadState(runId, baseDir).catch(() => {
+    console.error(`Run ${runId} not found in ${baseDir}.`);
+    process.exit(1);
+  });
+
+  const memoryPath = state.workspace.memory?.path || path.join(baseDir, 'engineering_memory.md');
+
+  // Create agents and steps
+  const agents = createSeaAgents({ memoryPath });
+  const steps = createSeaWorkflowSteps(agents);
+
+  // Create runner and resume
+  const runner = new WorkflowRunner({
+    baseDir,
+    onPhaseComplete: (phase) => {
+      console.log(`  [done] ${phase} completed`);
+    },
+  });
+
+  console.log(`Resuming run: ${runId}`);
+  console.log(`  Base dir: ${baseDir}`);
+  console.log(`  Current phase: ${state.currentPhase || 'unknown'}\n`);
+
+  const result = await runner.resume(runId, steps);
+
+  if (result.success) {
+    console.log(`\nResume completed successfully`);
+    console.log(`  Completed phases: ${result.completedPhases.join(' -> ')}`);
+  } else {
+    console.log(`\nResume failed: ${result.error}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// report
+// ---------------------------------------------------------------------------
+
+async function handleReport(runId: string, workspacePath?: string): Promise<void> {
   logger.info(`Showing report for run ${runId}`);
 
   try {
-    // Load state file
-    const baseDir = '.sea';
+    const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
     const statePath = path.join(baseDir, 'runs', runId, 'state.json');
 
     const stateContent = await fs.readFile(statePath, 'utf-8');
@@ -384,11 +883,12 @@ async function handleReport(runId: string): Promise<void> {
       finalDecision?: { decision: string; summary: string; requiredFixes?: string[]; warnings?: string[] };
       brutalRealityCheck?: { score: number; real?: string[]; partial?: string[]; fakeOrUnverified?: string[]; missing?: string[] };
       componentStates?: Record<string, { componentDecision: string; changedFiles?: string[] }>;
+      verification?: { overallStatus: string; totalCommandsRun: number; totalPassed: number; totalFailed: number };
     };
 
-    console.log(`\n═══════════════════════════════════════`);
+    console.log(`\n=========================================`);
     console.log(`  SEA Run Report: ${runId}`);
-    console.log(`═══════════════════════════════════════\n`);
+    console.log(`=========================================\n`);
 
     if (state.userRequest) {
       console.log(`Request: ${state.userRequest}`);
@@ -397,6 +897,11 @@ async function handleReport(runId: string): Promise<void> {
     if (state.finalDecision) {
       console.log(`\nFinal Decision: ${state.finalDecision.decision}`);
       console.log(`Summary: ${state.finalDecision.summary}`);
+    }
+
+    if (state.verification) {
+      const v = state.verification;
+      console.log(`\nVerification: ${v.overallStatus} (${v.totalPassed}/${v.totalCommandsRun} commands passed)`);
     }
 
     if (state.brutalRealityCheck) {
@@ -427,20 +932,84 @@ async function handleReport(runId: string): Promise<void> {
       }
     }
 
-    console.log(`\n═══════════════════════════════════════\n`);
+    console.log(`\n=========================================\n`);
   } catch (error) {
     logger.error(`Report failed: ${error}`);
     console.error(`Error: ${error}`);
   }
 }
 
+// ---------------------------------------------------------------------------
+// memory
+// ---------------------------------------------------------------------------
+
 async function handleMemory(query?: string): Promise<void> {
+  // Default memory path
+  let memoryPath = '.sea/engineering_memory.md';
+
+  // Try to load workspace.json to get configured memory path
+  const possibleWorkspacePaths = ['.sea/workspace.json'];
+  for (const wp of possibleWorkspacePaths) {
+    try {
+      const content = await fs.readFile(wp, 'utf-8');
+      const config = JSON.parse(content) as WorkspaceConfig;
+      if (config.memory?.path) {
+        memoryPath = config.memory.path;
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  let content: string;
+  try {
+    content = await fs.readFile(memoryPath, 'utf-8');
+  } catch {
+    console.error(`Memory file not found at: ${memoryPath}`);
+    console.error(`Initialize a workspace first: sea init --workspace <name>`);
+    process.exit(1);
+  }
+
   if (query) {
-    logger.info(`Searching memory: ${query}`);
-    console.log('Memory search not yet implemented');
-    console.log(`Query: ${query}`);
+    // Search for matching lines (case-insensitive)
+    const queryLower = query.toLowerCase();
+    const lines = content.split('\n');
+    const matches: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(queryLower)) {
+        // Include context: previous line and next line if they exist
+        const start = Math.max(0, i - 1);
+        const end = Math.min(lines.length, i + 2);
+        const contextLines = lines.slice(start, end);
+        matches.push(contextLines.join('\n'));
+      }
+    }
+
+    if (matches.length === 0) {
+      console.log(`No entries found matching: "${query}"`);
+    } else {
+      console.log(`Found ${matches.length} match(es) for "${query}":\n`);
+      // Deduplicate overlapping context windows
+      const seen = new Set<string>();
+      for (const match of matches) {
+        if (!seen.has(match)) {
+          seen.add(match);
+          console.log(match);
+          console.log('---');
+        }
+      }
+    }
   } else {
-    logger.info('Showing memory');
-    console.log('Memory command not yet implemented');
+    // Show all entries (tail last 50 lines if large)
+    const lines = content.split('\n');
+    if (lines.length > 50) {
+      console.log(`Showing last 50 of ${lines.length} lines:\n`);
+      const tail = lines.slice(-50);
+      console.log(tail.join('\n'));
+    } else {
+      console.log(content);
+    }
   }
 }
