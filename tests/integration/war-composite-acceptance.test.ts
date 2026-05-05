@@ -6,7 +6,7 @@
  * - backend (Java source)
  * - war-builder (assembly/packager)
  *
- * Validates: plan → run → request → after-execution (x2) → verify → inspect-artifact → report
+ * Validates: plan → run → request → after-execution (x2) → verify → inspect-artifact → report (all components, artifact inspection, diff, next action)
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -184,18 +184,47 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
     expect(inspection.entriesChecked['WEB-INF/web.xml']).toBe(true);
   });
 
-  it('9. sea report shows all three components and missing evidence', () => {
+  it('9. sea report shows all three components, artifact inspection, and next action', () => {
     const output = runCli(`report ${runId} -w ${workspacePath}`);
+
+    // Report structure
     expect(output).toContain('SEA Run Report');
     expect(output).toContain('Status:');
 
-    // Report should show backend and ui components
-    // In manual mode without full workflow run, may not show war-builder yet
+    // All three components must appear in report output
+    expect(output).toContain('backend:');
+    expect(output).toContain('ui:');
+    expect(output).toContain('war-builder:');
+
+    // Each component shows change role and decision
+    expect(output).toContain('Change:');
+    expect(output).toContain('Decision:');
+
+    // Artifact inspection section should appear for war-builder
+    expect(output).toContain('Artifact Inspection');
+
+    // State file must have all three components
     const statePath = path.join(tmpDir, '.sea', 'runs', runId, 'state.json');
     const state = JSON.parse(require('fs').readFileSync(statePath, 'utf-8'));
-
-    // Components that were touched
     expect(state.componentStates?.['backend']).toBeDefined();
     expect(state.componentStates?.['ui']).toBeDefined();
+    expect(state.componentStates?.['war-builder']).toBeDefined();
+
+    // diff.patch must exist for at least one component that was modified
+    const hasDiff = Object.values(state.componentStates).some(
+      (cs: any) => cs.diffPath && cs.diffPath.includes('diff')
+    );
+    expect(hasDiff).toBe(true);
+
+    // Artifact inspection must exist for war-builder
+    const warInspection = state.artifactInspections?.find(
+      (ai: any) => ai.component === 'war-builder'
+    );
+    expect(warInspection).toBeDefined();
+    // status is 'warning' because fixture has .gitkeep placeholders, not real .class/.jar files
+    expect(['passed', 'warning']).toContain(warInspection.status);
+
+    // Report must show next action
+    expect(output).toContain('Next Action');
   });
 });

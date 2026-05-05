@@ -8,6 +8,8 @@ import { WorkspaceState, ComponentState } from '../state/workspaceState.js';
 import { ExecutionGroupPlan, ComponentImplementationPlan } from '../state/workspaceState.js';
 import { createLogger } from '../utils/logger.js';
 import { saveComponentArtifact, getRunPaths } from '../workflow/checkpoint.js';
+import { captureSnapshot } from '../tools/gitTool.js';
+import { resolveComponentPathFromState } from '../tools/resolvePath.js';
 
 const logger = createLogger('ExecutionAgent');
 
@@ -128,6 +130,22 @@ export function createExecutionAgent(): (
             'execution-request.md',
             requestContent
           );
+
+          // Capture BEFORE snapshot so after-execution can compare against this state
+          try {
+            const componentPath = resolveComponentPathFromState(state, component);
+            const beforeSnapshot = await captureSnapshot(componentPath);
+            const runPaths = getRunPaths(state.runId, state.baseDir || '.sea');
+            const componentDir = `${runPaths.componentsDir}/${componentName}`;
+            const { mkdir, writeFile } = await import('fs/promises');
+            await mkdir(componentDir, { recursive: true });
+            const beforePath = `${componentDir}/git-status-before.json`;
+            await writeFile(beforePath, JSON.stringify(beforeSnapshot, null, 2), 'utf-8');
+            cs.gitStatusBeforePath = `components/${componentName}/git-status-before.json`;
+            logger.info(`Captured BEFORE snapshot for ${componentName}: commit ${beforeSnapshot.commitHash.slice(0, 8)}`);
+          } catch (err) {
+            logger.warn(`Could not capture BEFORE snapshot for ${componentName}: ${err}`);
+          }
 
           // Update component state
           cs.executorResult = {

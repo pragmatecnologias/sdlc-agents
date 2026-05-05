@@ -9,7 +9,8 @@ import AdmZip from 'adm-zip';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { ArtifactInspectionReport, ArtifactType } from '../state/schemas.js';
 import { saveComponentArtifact } from '../workflow/checkpoint.js';
-import { resolveComponentPathFromState, resolveArtifactPath, resolveOutputGlob } from '../tools/resolvePath.js';
+import { resolveComponentPathFromState } from '../tools/resolvePath.js';
+import { resolveComponentArtifact } from '../tools/artifactResolver.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ArtifactInspectionAgent');
@@ -44,24 +45,15 @@ export function createArtifactInspectionAgent(): (
       // Only inspect if component was modified (unless targeting a specific component)
       if (!onlyComponent && componentState.changeRole === 'no_change') continue;
 
-      // Determine the artifact path using centralized resolution
+      // Determine the artifact path using shared resolver
       const componentPath = resolveComponentPathFromState(state, component);
-      let artifactPath = component.artifact.outputPath
-        ? resolveArtifactPath(componentPath, component.artifact.outputPath)
-        : undefined;
+      const resolution = await resolveComponentArtifact(
+        componentPath,
+        component.artifact.outputPath,
+        component.artifact.outputGlob
+      );
 
-      // Support outputGlob: find matching file (newest by mtime)
-      if (!artifactPath && component.artifact.outputGlob) {
-        const globResult = await resolveOutputGlob(componentPath, component.artifact.outputGlob);
-        if (globResult.selectedPath) {
-          artifactPath = globResult.selectedPath;
-          logger.info(`outputGlob resolved: ${globResult.reason}`);
-        } else {
-          logger.warn(`outputGlob failed: ${globResult.reason}`);
-        }
-      }
-
-      if (!artifactPath) {
+      if (resolution.artifactPath === undefined) {
         const skipReport: ArtifactInspectionReport = {
           component: componentName,
           artifactType: component.artifact.type,
@@ -70,12 +62,17 @@ export function createArtifactInspectionAgent(): (
           readable: false,
           entriesChecked: {},
           warnings: [],
-          errors: ['No outputPath or outputGlob resolved'],
+          errors: [resolution.error],
           status: 'failed',
         };
         inspections.push(skipReport);
         updatedComponentStates[componentName].artifactInspection = skipReport;
         continue;
+      }
+
+      const artifactPath = resolution.artifactPath;
+      if (resolution.resolvedVia === 'outputGlob' && resolution.globInfo) {
+        logger.info(`outputGlob resolved: ${resolution.globInfo.reason}`);
       }
 
       try {

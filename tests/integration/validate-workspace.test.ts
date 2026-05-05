@@ -65,7 +65,7 @@ describe('validate-workspace for WAR_COMPOSITE_APP', () => {
     }
   });
 
-  it('warns when requiredEntries is missing for WAR artifact', async () => {
+  it('errors when requiredEntries is missing for WAR artifact', async () => {
     const tmpDir = await createTmpWorkspace();
     try {
       const workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
@@ -74,8 +74,8 @@ describe('validate-workspace for WAR_COMPOSITE_APP', () => {
       delete warBuilder.artifact.requiredEntries;
       writeFileSync(workspacePath, JSON.stringify(config, null, 2));
 
-      const output = runCli(`validate-workspace -w ${workspacePath}`, tmpDir);
-      expect(output).toContain('WARN');
+      const output = runCliFails(`validate-workspace -w ${workspacePath}`, tmpDir);
+      expect(output).toContain('FAIL');
       expect(output).toContain('requiredEntries');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -112,6 +112,24 @@ describe('validate-workspace for WAR_COMPOSITE_APP', () => {
       const output = runCliFails(`validate-workspace -w ${workspacePath}`, tmpDir);
       expect(output).toContain('FAIL');
       expect(output).toContain('outputPath or outputGlob');
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('errors when WAR requiredEntries is missing essential entries', async () => {
+    const tmpDir = await createTmpWorkspace();
+    try {
+      const workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
+      const config = JSON.parse(readFileSync(workspacePath, 'utf-8'));
+      const warBuilder = config.components.find((c: any) => c.name === 'war-builder');
+      // Set requiredEntries but omit WEB-INF/classes/
+      warBuilder.artifact.requiredEntries = ['WEB-INF/'];
+      writeFileSync(workspacePath, JSON.stringify(config, null, 2));
+
+      const output = runCliFails(`validate-workspace -w ${workspacePath}`, tmpDir);
+      expect(output).toContain('FAIL');
+      expect(output).toContain('WEB-INF/classes/');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

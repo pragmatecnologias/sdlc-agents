@@ -23,12 +23,15 @@ import { createSeaAgents } from '../agents/index.js';
 import {
   captureSnapshot,
   getChangedFiles,
+  getChangedFilesSince,
+  getDiffSince,
   saveGitDiffToFile,
   saveGitStatusToFile,
 } from '../tools/gitTool.js';
 import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
 import { runCommand } from '../tools/commandRunner.js';
-import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir, resolveArtifactPath } from '../tools/resolvePath.js';
+import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir } from '../tools/resolvePath.js';
+import { resolveComponentArtifact } from '../tools/artifactResolver.js';
 
 const logger = createLogger('CLI');
 
@@ -561,9 +564,22 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     console.log(`  Captured fresh snapshot as BEFORE state`);
   }
 
-  // 2. Get changed files
-  const changedFiles = await getChangedFiles(componentPath);
-  console.log(`  Changed files: ${changedFiles.length}`);
+  // 2. Get changed files — compare against BEFORE snapshot if available
+  const repoRoot = getWorkspaceRoot(state);
+  let changedFiles: string[];
+  let diffRaw: string | undefined;
+
+  if (beforeSnapshot.commitHash) {
+    // Compare current HEAD against the BEFORE snapshot commit
+    changedFiles = await getChangedFilesSince(repoRoot, beforeSnapshot.commitHash, 'HEAD', componentPath);
+    const diffResult = await getDiffSince(repoRoot, beforeSnapshot.commitHash, 'HEAD', componentPath);
+    diffRaw = diffResult.raw;
+    console.log(`  Changed files (since ${beforeSnapshot.commitHash.slice(0, 8)}): ${changedFiles.length}`);
+  } else {
+    // Fallback: check working tree changes
+    changedFiles = await getChangedFiles(componentPath);
+    console.log(`  Changed files (working tree): ${changedFiles.length}`);
+  }
 
   if (changedFiles.length > 0) {
     console.log(`    ${changedFiles.map((f) => `  - ${f}`).join('\n')}`);
@@ -571,8 +587,13 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
 
   // 3. Save diff
   const diffPath = path.join(componentDir, 'diff.patch');
-  await saveGitDiffToFile(componentPath, diffPath);
-  console.log(`  Diff saved to: ${diffPath}`);
+  if (diffRaw !== undefined) {
+    await fs.writeFile(diffPath, diffRaw, 'utf-8');
+    console.log(`  Diff saved to: ${diffPath}`);
+  } else {
+    await saveGitDiffToFile(componentPath, diffPath);
+    console.log(`  Diff saved to: ${diffPath}`);
+  }
 
   // 4. Save git status (AFTER)
   const statusPath = path.join(componentDir, 'git-status-after.json');
@@ -807,32 +828,25 @@ async function handleInspectArtifact(
     process.exit(1);
   }
 
-  // Resolve component path and artifact path
+  // Resolve component path and artifact path using shared resolver
   const componentPath = resolveComponentPathFromState(state, componentConfig);
-  let artifactPath = componentConfig.artifact.outputPath
-    ? resolveArtifactPath(componentPath, componentConfig.artifact.outputPath)
-    : undefined;
+  const resolution = await resolveComponentArtifact(
+    componentPath,
+    componentConfig.artifact.outputPath,
+    componentConfig.artifact.outputGlob
+  );
 
-  // Support outputGlob: find matching file (newest by mtime)
-  let globDisplayInfo: string | undefined;
-  if (!artifactPath && componentConfig.artifact.outputGlob) {
-    const { resolveOutputGlob } = await import('../tools/resolvePath.js');
-    const globResult = await resolveOutputGlob(componentPath, componentConfig.artifact.outputGlob);
-    if (globResult.selectedPath) {
-      artifactPath = globResult.selectedPath;
-      globDisplayInfo = `Glob: ${componentConfig.artifact.outputGlob} → ${globResult.allMatches.length} match(es), selected: ${path.basename(globResult.selectedPath)} (${globResult.reason})`;
-    } else {
-      console.error(`outputGlob failed for '${componentName}': ${globResult.reason}`);
-      console.error(`  Component path: ${componentPath}`);
-      console.error(`  Glob pattern:   ${componentConfig.artifact.outputGlob}`);
-      process.exit(1);
-    }
-  }
-
-  if (!artifactPath) {
-    console.error(`No artifact path or outputGlob resolved for component '${componentName}'`);
+  if (resolution.artifactPath === undefined) {
+    console.error(`Artifact resolution failed for '${componentName}': ${resolution.error}`);
+    if (resolution.searchedDir) console.error(`  Component path: ${resolution.searchedDir}`);
+    if (resolution.globPattern) console.error(`  Glob pattern:   ${resolution.globPattern}`);
     process.exit(1);
   }
+
+  const artifactPath = resolution.artifactPath;
+  const globDisplayInfo = resolution.resolvedVia === 'outputGlob' && resolution.globInfo
+    ? `Glob: ${resolution.globInfo.globPattern} → ${resolution.globInfo.allMatches.length} match(es), selected: ${path.basename(resolution.globInfo.selectedPath!)} (${resolution.globInfo.reason})`
+    : undefined;
 
   // Check if artifact exists
   let artifactExists = false;

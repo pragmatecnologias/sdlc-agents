@@ -186,14 +186,27 @@ export async function validateWorkspaceConfig(
       }
     }
 
-    // Warn if WAR/JAR artifacts are missing recommended requiredEntries
-    if (comp.artifact && (comp.artifact.type === 'war' || comp.artifact.type === 'jar')) {
+    // WAR artifacts MUST have requiredEntries — error if missing
+    if (comp.artifact && comp.artifact.type === 'war') {
       if (!comp.artifact.requiredEntries || comp.artifact.requiredEntries.length === 0) {
-        if (comp.artifact.type === 'war') {
-          compWarnings.push('WAR artifact has no requiredEntries — recommend: WEB-INF/, WEB-INF/classes/, WEB-INF/lib/');
-        } else {
-          compWarnings.push(`${comp.artifact.type.toUpperCase()} artifact has no requiredEntries`);
+        compErrors.push('WAR artifact must have requiredEntries (at minimum: WEB-INF/, WEB-INF/classes/, WEB-INF/lib/)');
+        errors.push(`[${comp.name}] WAR artifact must have requiredEntries`);
+      } else {
+        // Validate required entries include essential WAR structure
+        const required = ['WEB-INF/', 'WEB-INF/classes/', 'WEB-INF/lib/'];
+        for (const entry of required) {
+          if (!comp.artifact.requiredEntries.includes(entry)) {
+            compErrors.push(`WAR artifact missing required entry: ${entry}`);
+            errors.push(`[${comp.name}] WAR artifact missing required entry: ${entry}`);
+          }
         }
+      }
+    }
+
+    // JAR artifacts: warn if missing requiredEntries
+    if (comp.artifact && comp.artifact.type === 'jar') {
+      if (!comp.artifact.requiredEntries || comp.artifact.requiredEntries.length === 0) {
+        compWarnings.push('JAR artifact has no requiredEntries');
       }
     }
 

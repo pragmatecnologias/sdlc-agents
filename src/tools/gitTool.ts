@@ -239,6 +239,90 @@ export async function getDiffBetweenCommits(
 }
 
 /**
+ * Return changed files between two commits, scoped to a subdirectory.
+ * Uses pathspec to limit results to files under `scopePath`.
+ */
+export async function getDiffBetweenCommitsScoped(
+  repoPath: string,
+  from: string,
+  to: string,
+  scopePath: string
+): Promise<GitDiff> {
+  const git = await requireRepo(repoPath);
+  const relScope = path.relative(repoPath, scopePath);
+  const raw = await git.diff([`${from}..${to}`, '--', relScope]);
+  const { files, insertions, deletions } = parseDiffSummary(raw);
+  return { raw, files, insertions, deletions };
+}
+
+/**
+ * Return list of changed file names between two commits, scoped to a subdirectory.
+ * Also includes untracked/modified files in the working tree.
+ */
+export async function getChangedFilesSince(
+  repoPath: string,
+  from: string,
+  to: string,
+  scopePath: string
+): Promise<string[]> {
+  const git = await requireRepo(repoPath);
+  const relScope = path.relative(repoPath, scopePath) || '.';
+
+  // Get committed changes between from..to
+  const committedRaw = await git.diff([`${from}..${to}`, '--name-only', '--', relScope]);
+  const committed = committedRaw.split('\n').filter(f => f.length > 0);
+
+  // Also get uncommitted changes (working tree vs HEAD)
+  const status: StatusResult = await git.status(['--', relScope]);
+  const uncommitted = new Set<string>();
+  for (const f of status.staged) uncommitted.add(f);
+  for (const f of status.modified) uncommitted.add(f);
+  for (const f of status.not_added) uncommitted.add(f);
+  for (const f of status.deleted) uncommitted.add(f);
+
+  // Merge: committed + uncommitted, deduplicated
+  const all = new Set([...committed, ...uncommitted]);
+  return Array.from(all).sort();
+}
+
+/**
+ * Return diff between two commits plus working tree changes, scoped to a subdirectory.
+ */
+export async function getDiffSince(
+  repoPath: string,
+  from: string,
+  to: string,
+  scopePath: string
+): Promise<GitDiff> {
+  const git = await requireRepo(repoPath);
+  const relScope = path.relative(repoPath, scopePath) || '.';
+
+  // Committed diff
+  const committedRaw = await git.diff([`${from}..${to}`, '--', relScope]);
+
+  // Working tree diff (unstaged)
+  const unstagedRaw = await git.diff(['--', relScope]);
+
+  // Staged diff
+  const stagedRaw = await git.diff(['--staged', '--', relScope]);
+
+  // Status for untracked files
+  const status: StatusResult = await git.status(['--', relScope]);
+
+  let raw = committedRaw;
+  if (stagedRaw && !raw.includes(stagedRaw)) raw += stagedRaw;
+  if (unstagedRaw && !raw.includes(unstagedRaw)) raw += unstagedRaw;
+
+  // Add untracked file headers
+  for (const file of status.not_added) {
+    raw += `\n--- /dev/null\n+++ b/${file}\n`;
+  }
+
+  const { files, insertions, deletions } = parseDiffSummary(raw);
+  return { raw, files, insertions, deletions };
+}
+
+/**
  * Capture a point-in-time snapshot of the repository state: branch, commit
  * hash, dirty flag, and the full list of changed files.
  */

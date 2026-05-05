@@ -252,8 +252,17 @@ function determineVerdict(
     return 'NEEDS_FIXES';
   }
 
-  // Check if all required evidence is present
-  if (!evidence.diffsCaptured) {
+  // Check if diffs are required: only when at least one component has changeRole=modify
+  const anyModifyRole = componentStates
+    ? Object.values(componentStates).some((cs: any) => cs.changeRole === 'modify')
+    : false;
+
+  if (anyModifyRole && !evidence.diffsCaptured) {
+    return 'NEEDS_FIXES';
+  }
+
+  // For pure verification runs (no modify role), require verification to have run
+  if (!anyModifyRole && !evidence.testsRun && !evidence.buildsRun) {
     return 'NEEDS_FIXES';
   }
 

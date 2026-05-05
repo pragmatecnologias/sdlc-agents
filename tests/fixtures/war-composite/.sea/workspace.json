@@ -73,6 +73,7 @@
       "artifact": {
         "type": "war",
         "outputPath": "output/app.war",
+        "requiredEntries": ["WEB-INF/", "WEB-INF/classes/", "WEB-INF/lib/"],
         "inspectionProfile": "war"
       },
       "dependencies": ["ui", "backend"],
