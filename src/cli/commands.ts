@@ -104,6 +104,16 @@ export function registerCommands(program: Command): void {
       await handleRequest(runId, options.component, options.output, options.workspace);
     });
 
+  // doctor command
+  program
+    .command('doctor')
+    .description('Run comprehensive workspace health check')
+    .requiredOption('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
+    .action(async (options) => {
+      await handleDoctor(options.workspace, options.json);
+    });
+
   // validate-workspace command
   program
     .command('validate-workspace')
@@ -197,6 +207,30 @@ export function registerCommands(program: Command): void {
     .option('--json', 'Output as JSON')
     .action(async (runId, options) => {
       await handleNext(runId, options.workspace, options.json);
+    });
+
+  // branch command
+  program
+    .command('branch')
+    .description('Show or create task branches for a run')
+    .argument('<runId>', 'Run ID')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
+    .option('--create', 'Create task branches for all components')
+    .action(async (runId, options) => {
+      await handleBranch(runId, options.workspace, options.json, options.create);
+    });
+
+  // rollback command
+  program
+    .command('rollback')
+    .description('Rollback changes from a run')
+    .argument('<runId>', 'Run ID')
+    .option('-c, --component <name>', 'Rollback specific component')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--yes', 'Skip confirmation')
+    .action(async (runId, options) => {
+      await handleRollback(runId, options.component, options.workspace, options.yes);
     });
 
   // interactive mode (sea with no subcommand, or 'interactive', or 'ui')
@@ -386,6 +420,38 @@ async function handleRun(
     // Get actual workspace path (parent of .sea directory)
     const baseDir = resolveWorkspaceRoot(workspacePath);
     const seaDir = resolveSeaDir(workspacePath);
+
+    // Capture branch safety state before execution
+    const { captureBranchSafety, saveBranchSafetyState, checkDirtyComponents } = await import('../tools/branchSafety.js');
+    const dirtyComponents = await checkDirtyComponents(baseDir, workspaceConfig.components || []);
+
+    if (dirtyComponents.length > 0) {
+      const requireClean = workspaceConfig.qualityGates?.requireSourceRepoCleanBeforeRun;
+      if (requireClean) {
+        console.error(`\n🔴 BLOCKED: The following components have uncommitted changes and workspace policy requires clean repos:`);
+        for (const name of dirtyComponents) {
+          console.error(`  - ${name}`);
+        }
+        console.error(`Commit or stash your changes before running 'sea run'.`);
+        console.error(`Or set requireSourceRepoCleanBeforeRun: false in workspace.json to bypass.\n`);
+        process.exit(1);
+      }
+
+      console.warn(`\n⚠️  Warning: The following components have uncommitted changes:`);
+      for (const name of dirtyComponents) {
+        console.warn(`  - ${name}`);
+      }
+      console.warn('These changes may be affected by SEA operations.');
+      console.warn('Commit or stash before continuing, or expect possible conflicts.\n');
+    }
+
+    const branchSafety = await captureBranchSafety(
+      runId,
+      baseDir,
+      workspaceConfig.components || [],
+      seaDir
+    );
+    await saveBranchSafetyState(runId, branchSafety, seaDir);
 
     // Fix workspaceConfig to use actual path as workspaceName
     const workspaceConfigForRun = {
@@ -769,6 +835,103 @@ async function handleValidateWorkspace(workspacePath: string, asJson?: boolean):
 
   if (result.status === 'failed') {
     process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+async function handleDoctor(workspacePath: string, asJson?: boolean): Promise<void> {
+  logger.info(`Running SEA doctor on: ${workspacePath}`);
+
+  const { runDoctor } = await import('../tools/doctor.js');
+  const result = await runDoctor(workspacePath);
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // Render human-readable output
+  const statusColor = result.overallStatus === 'FAIL' ? '\x1b[31m' :
+                      result.overallStatus === 'WARN' ? '\x1b[33m' : '\x1b[32m';
+  const reset = '\x1b[0m';
+
+  console.log('\n');
+  console.log('═══════════════════════════════════════════════════════════════');
+  console.log('  SEA DOCTOR — Workspace Health Report');
+  console.log('═══════════════════════════════════════════════════════════════');
+  console.log('');
+  console.log(`  Workspace:    ${result.workspaceName || '(unnamed)'}`);
+  console.log(`  Path:         ${result.workspacePath}`);
+  console.log(`  Root:         ${result.workspaceRoot}`);
+  console.log(`  Profile:      ${result.profile || '(none)'}`);
+  console.log('');
+  console.log(`  Overall:      ${statusColor}${result.overallStatus}${reset}`);
+  console.log(`  Passed:       ${result.summary.passed}`);
+  console.log(`  Warnings:     ${result.summary.warnings}`);
+  console.log(`  Failures:     ${result.summary.failures}`);
+  console.log('');
+
+  // Group by status
+  const failures = result.checks.filter(c => c.status === 'FAIL');
+  const warnings = result.checks.filter(c => c.status === 'WARN');
+  const passed = result.checks.filter(c => c.status === 'PASS');
+
+  if (failures.length > 0) {
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('  🔴  FAILURES');
+    console.log('───────────────────────────────────────────────────────────────');
+    for (const check of failures) {
+      const comp = check.component ? `[${check.component}] ` : '';
+      console.log(`\n  ${comp}${check.check}`);
+      console.log(`    Problem:     ${check.problem}`);
+      console.log(`    Why it matters: ${check.whyItMatters}`);
+      console.log(`    How to fix:   ${check.howToFix}`);
+    }
+    console.log('');
+  }
+
+  if (warnings.length > 0) {
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('  🟡  WARNINGS');
+    console.log('───────────────────────────────────────────────────────────────');
+    for (const check of warnings) {
+      const comp = check.component ? `[${check.component}] ` : '';
+      console.log(`\n  ${comp}${check.check}`);
+      console.log(`    Problem:     ${check.problem}`);
+      console.log(`    Why it matters: ${check.whyItMatters}`);
+      console.log(`    How to fix:   ${check.howToFix}`);
+    }
+    console.log('');
+  }
+
+  if (passed.length > 0 && result.summary.failures === 0) {
+    console.log('───────────────────────────────────────────────────────────────');
+    console.log('  ✅  PASSED CHECKS');
+    console.log('───────────────────────────────────────────────────────────────');
+    const compGroups = new Map<string, string[]>();
+    for (const check of passed) {
+      const key = check.component || '(workspace)';
+      if (!compGroups.has(key)) compGroups.set(key, []);
+      compGroups.get(key)!.push(check.check);
+    }
+    for (const [comp, checkNames] of compGroups) {
+      console.log(`  ${comp}: ${checkNames.join(', ')}`);
+    }
+    console.log('');
+  }
+
+  console.log('═══════════════════════════════════════════════════════════════');
+
+  if (result.overallStatus === 'FAIL') {
+    console.log('\n  🔴  Workspace has failures. Fix them before running sea plan/run.\n');
+    process.exit(1);
+  } else if (result.overallStatus === 'WARN') {
+    console.log('\n  🟡  Workspace has warnings. Review above before running sea plan/run.\n');
+  } else {
+    console.log('\n  ✅  Workspace is healthy. Ready to run sea plan/run.\n');
   }
 }
 
@@ -1404,6 +1567,110 @@ async function handleNext(runId: string, workspacePath?: string, asJson?: boolea
     console.log(renderNextActionJson(nextAction, workspacePath));
   } else {
     renderNextAction(nextAction, workspacePath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// branch
+// ---------------------------------------------------------------------------
+
+async function handleBranch(
+  runId: string,
+  workspacePath?: string,
+  asJson?: boolean,
+  createBranches?: boolean
+): Promise<void> {
+  if (!workspacePath) {
+    const { findWorkspaceFromCwd } = await import('../services/workspaceService.js');
+    const detection = await findWorkspaceFromCwd(process.cwd());
+    if (!detection.found) {
+      console.error('No workspace found. Use -w to specify workspace path.');
+      process.exit(1);
+    }
+    workspacePath = detection.workspacePath!;
+  }
+
+  if (createBranches) {
+    const baseDir = resolveSeaDir(workspacePath);
+    const { loadState } = await import('../workflow/checkpoint.js');
+    const { createTaskBranches, saveBranchSafetyState } = await import('../tools/branchSafety.js');
+
+    const state = await loadState(runId, baseDir);
+    if (!state) {
+      console.error(`Run ${runId} not found.`);
+      process.exit(1);
+    }
+
+    console.log(`Creating task branches for run ${runId}...`);
+    const result = await createTaskBranches(
+      runId,
+      state.baseDir || baseDir,
+      state.workspace.components || [],
+      baseDir
+    );
+
+    if (result.failed.length > 0) {
+      console.warn(`Failed to create branches for: ${result.failed.join(', ')}`);
+    }
+    console.log(`Created branches: ${result.branches.join(', ') || 'none'}`);
+    await saveBranchSafetyState(runId, result, baseDir);
+    return;
+  }
+
+  const { loadBranchSafetyState, formatBranchSafetyReport } = await import('../tools/branchSafety.js');
+
+  const safetyState = await loadBranchSafetyState(runId);
+  if (!safetyState) {
+    console.error(`No branch safety state found for run ${runId}.`);
+    console.error('Run `sea run` first to capture branch state.');
+    process.exit(1);
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify(safetyState, null, 2));
+  } else {
+    console.log(formatBranchSafetyReport(safetyState));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// rollback
+// ---------------------------------------------------------------------------
+
+async function handleRollback(runId: string, componentName?: string, workspacePath?: string, confirmed?: boolean): Promise<void> {
+  if (!workspacePath) {
+    const { findWorkspaceFromCwd } = await import('../services/workspaceService.js');
+    const detection = await findWorkspaceFromCwd(process.cwd());
+    if (!detection.found) {
+      console.error('No workspace found. Use -w to specify workspace path.');
+      process.exit(1);
+    }
+    workspacePath = detection.workspacePath!;
+  }
+
+  const baseDir = resolveSeaDir(workspacePath);
+  const { previewRollback, applyRollback, formatRollbackPreview } = await import('../tools/rollback.js');
+
+  if (!confirmed) {
+    // Dry run — show what would be rolled back
+    const targets = await previewRollback(runId, baseDir);
+    console.log(formatRollbackPreview(targets));
+    console.log('Run with --yes flag to confirm rollback.');
+    return;
+  }
+
+  const result = await applyRollback(runId, componentName || null, baseDir, confirmed);
+
+  if (result.applied.length === 0 && result.failed.length === 0) {
+    console.log('No rollback targets found for this run.');
+    return;
+  }
+
+  console.log(`\nRollback complete:`);
+  console.log(`  Applied:   ${result.applied.join(', ') || 'none'}`);
+  console.log(`  Failed:    ${result.failed.join(', ') || 'none'}`);
+  if (result.reports.length > 0) {
+    console.log(`  Reports:   ${result.reports.join(', ')}`);
   }
 }
 

@@ -100,7 +100,42 @@ export async function runInteractiveMode(): Promise<void> {
 // ============================================================================
 
 async function showMainMenu(workspacePath: string): Promise<void> {
-  const choices = [
+  // Try to get the most recent active run and its next action
+  let nextAction: NextAction | null = null;
+  let recentRunId: string | null = null;
+
+  try {
+    const runs = await listRecentRuns(workspacePath, 5);
+    const activeRuns = runs.filter(r =>
+      r.runStatus !== 'completed' && r.runStatus !== 'failed' && r.runStatus !== 'aborted'
+    );
+
+    if (activeRuns.length > 0) {
+      const latestRun = activeRuns[0];
+      recentRunId = latestRun.runId;
+
+      const stateResult = await getRunState(latestRun.runId, workspacePath);
+      if (stateResult) {
+        const state = stateResult.state as unknown as WorkspaceState;
+        nextAction = determineNextAction(state);
+      }
+    }
+  } catch {
+    // Ignore — we'll just show the regular menu
+  }
+
+  const choices: Array<{ name: string; value: string }> = [];
+
+  // One-button next action — only add if we have one
+  if (nextAction && recentRunId) {
+    const nextCmd = formatNextActionCommand(nextAction, workspacePath);
+    choices.push({
+      name: `▶  Recommended: ${nextAction.reason}${nextCmd ? ` (${nextCmd.split(' ').slice(0, 3).join(' ')})` : ''}`,
+      value: `run-next`,
+    });
+  }
+
+  choices.push(
     { name: 'Start new engineering run', value: 'start' },
     { name: 'Continue existing run', value: 'continue' },
     { name: 'View run status', value: 'status' },
@@ -108,14 +143,21 @@ async function showMainMenu(workspacePath: string): Promise<void> {
     { name: 'Validate workspace', value: 'validate' },
     { name: 'Search memory', value: 'memory' },
     { name: 'Exit', value: 'exit' },
-  ];
+  );
 
   const answer = await select({
-    message: 'What would you like to do?',
+    message: nextAction
+      ? `📋 Next Action: ${nextAction.reason}\n   Command: ${formatNextActionCommand(nextAction, workspacePath) || 'none'}\n\nWhat would you like to do?`
+      : 'What would you like to do?',
     choices,
   });
 
   switch (answer) {
+    case 'run-next':
+      if (nextAction && recentRunId) {
+        await handleRunNextAction(nextAction, recentRunId, workspacePath);
+      }
+      break;
     case 'start':
       await handleStartRun(workspacePath);
       break;
@@ -140,6 +182,65 @@ async function showMainMenu(workspacePath: string): Promise<void> {
   }
 
   await showMainMenu(workspacePath);
+}
+
+// ============================================================================
+// One-button Next Action
+// ============================================================================
+
+async function handleRunNextAction(
+  nextAction: NextAction,
+  runId: string,
+  workspacePath: string
+): Promise<void> {
+  console.log(`\n▶  Running next action for ${runId}...\n`);
+
+  const cmd = formatNextActionCommand(nextAction, workspacePath);
+
+  if (!cmd) {
+    console.log('No action needed — run may be complete.');
+    return;
+  }
+
+  // Route to the appropriate handler based on action type
+  switch (nextAction.type) {
+    case 'OPEN_EXECUTION_REQUEST': {
+      const component = nextAction.component || '';
+      await handleOpenRequest(runId, component, workspacePath);
+      break;
+    }
+    case 'CAPTURE_EVIDENCE': {
+      const component = nextAction.component || '';
+      await handleCaptureEvidence(runId, component, workspacePath);
+      break;
+    }
+    case 'RUN_VERIFICATION': {
+      await handleRunVerification(runId, workspacePath);
+      break;
+    }
+    case 'INSPECT_ARTIFACT': {
+      const component = nextAction.component || '';
+      await handleInspectArtifact(runId, component, workspacePath);
+      break;
+    }
+    case 'SHOW_REPORT': {
+      const stateResult = await getRunState(runId, workspacePath);
+      if (stateResult) {
+        await handleShowReport(stateResult.state as unknown as WorkspaceState, workspacePath);
+      }
+      break;
+    }
+    case 'RESUME':
+    case 'FIX_BLOCKER': {
+      await handleResume(runId, workspacePath);
+      break;
+    }
+    case 'NONE':
+      console.log('No action needed — run may already be complete.');
+      break;
+    default:
+      console.log(`Don't know how to handle action type: ${nextAction.type}`);
+  }
 }
 
 // ============================================================================

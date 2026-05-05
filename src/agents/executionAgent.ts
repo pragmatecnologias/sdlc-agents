@@ -10,6 +10,7 @@ import { createLogger } from '../utils/logger.js';
 import { saveComponentArtifact, getRunPaths } from '../workflow/checkpoint.js';
 import { captureSnapshot } from '../tools/gitTool.js';
 import { resolveComponentPathFromState } from '../tools/resolvePath.js';
+import { analyzeComponent, formatComponentAnalysisMarkdown } from '../tools/componentAnalyzer.js';
 
 const logger = createLogger('ExecutionAgent');
 
@@ -115,12 +116,29 @@ export function createExecutionAgent(): (
           logger.info(`Component ${componentName} requires manual execution`);
 
           // Build execution request content
+          // Analyze the component to provide context
+          const componentPath = resolveComponentPathFromState(state, component);
+          const componentAnalysis = await analyzeComponent(componentName, componentPath);
+          cs.analysis = {
+            componentName,
+            path: componentPath,
+            kind: component.kind,
+            role: component.role,
+            framework: componentAnalysis.framework || undefined,
+            buildSystem: componentAnalysis.buildSystem || undefined,
+            testFramework: componentAnalysis.testFramework || undefined,
+            keyFiles: componentAnalysis.keyFiles,
+            dependencies: componentAnalysis.apiFiles,
+            insights: componentAnalysis.insights,
+          };
+
           const requestContent = buildExecutionRequestMarkdown(
             state,
             componentName,
             component.path,
             componentPlan,
-            group
+            group,
+            componentAnalysis
           );
 
           // Save execution request as markdown file
@@ -207,7 +225,8 @@ function buildExecutionRequestMarkdown(
   componentName: string,
   componentPath: string,
   componentPlan: ComponentImplementationPlan | undefined,
-  group: ExecutionGroupPlan
+  group: ExecutionGroupPlan,
+  analysis?: { keyFiles: string[]; testFiles: string[]; apiFiles: string[]; configFiles: string[]; insights: string[]; framework: string | null; buildSystem: string | null; testFramework: string | null }
 ): string {
   const lines: string[] = [];
 
@@ -303,6 +322,54 @@ function buildExecutionRequestMarkdown(
       lines.push(`- ${rs}`);
     }
     lines.push('');
+  }
+
+  // Add component analysis section if available
+  if (analysis) {
+    lines.push('## Component Analysis');
+    lines.push('');
+    if (analysis.framework) {
+      lines.push(`- **Framework:** ${analysis.framework}`);
+    }
+    if (analysis.buildSystem) {
+      lines.push(`- **Build System:** ${analysis.buildSystem}`);
+    }
+    if (analysis.testFramework) {
+      lines.push(`- **Test Framework:** ${analysis.testFramework}`);
+    }
+    lines.push('');
+
+    if (analysis.keyFiles.length > 0) {
+      lines.push('### Key Source Files');
+      for (const f of analysis.keyFiles) {
+        lines.push(`- \`${f}\``);
+      }
+      lines.push('');
+    }
+
+    if (analysis.testFiles.length > 0) {
+      lines.push('### Test Files');
+      for (const f of analysis.testFiles) {
+        lines.push(`- \`${f}\``);
+      }
+      lines.push('');
+    }
+
+    if (analysis.apiFiles.length > 0) {
+      lines.push('### API / Route Files');
+      for (const f of analysis.apiFiles) {
+        lines.push(`- \`${f}\``);
+      }
+      lines.push('');
+    }
+
+    if (analysis.insights.length > 0) {
+      lines.push('### Insights');
+      for (const insight of analysis.insights) {
+        lines.push(`- ${insight}`);
+      }
+      lines.push('');
+    }
   }
 
   lines.push('## Important Rules');
