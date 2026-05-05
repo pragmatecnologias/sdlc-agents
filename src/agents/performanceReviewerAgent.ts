@@ -22,7 +22,7 @@ export function createPerformanceReviewerAgent(): (
     logger.info('Running performance reviewer agent');
 
     const { componentStates } = state;
-    const runPaths = getRunPaths(state.runId);
+    const runPaths = getRunPaths(state.runId, state.baseDir);
 
     const report: PerformanceReviewReport = {
       status: 'approved',

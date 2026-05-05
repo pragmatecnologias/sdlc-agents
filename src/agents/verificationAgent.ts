@@ -83,7 +83,7 @@ export function createVerificationAgent(): (
       let status: 'passed' | 'failed' | 'skipped' | 'blocked' = 'passed';
 
       // Determine the save directory for command output
-      const runPaths = getRunPaths(state.runId);
+      const runPaths = getRunPaths(state.runId, state.baseDir);
       const componentSaveDir = path.join(runPaths.componentsDir, componentName);
 
       // Build the ordered list of commands to run for this component

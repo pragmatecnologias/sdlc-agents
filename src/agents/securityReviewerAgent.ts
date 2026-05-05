@@ -22,7 +22,7 @@ export function createSecurityReviewerAgent(): (
     logger.info('Running security reviewer agent');
 
     const { componentStates } = state;
-    const runPaths = getRunPaths(state.runId);
+    const runPaths = getRunPaths(state.runId, state.baseDir);
 
     const findings: SecurityReviewReport['findings'] = [];
     let blockers = 0;

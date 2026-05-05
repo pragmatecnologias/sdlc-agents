@@ -40,9 +40,9 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
       timeout: 30000,
     });
 
-    // Create temp workspace from fixture
+    // Create temp workspace from fixture (exclude .git from fixture copy)
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sea-enterprise-war-'));
-    await fs.cp(FIXTURE, tmpDir, { recursive: true });
+    await fs.cp(FIXTURE, tmpDir, { recursive: true, filter: (src) => !src.endsWith('.git') });
     workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
 
     // Init git so evidence capture works

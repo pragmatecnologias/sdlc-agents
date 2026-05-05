@@ -1,7 +1,10 @@
 {
   "workspaceName": "enterprise-war-app",
+
   "projectProfile": "WAR_COMPOSITE_APP",
+
   "defaultExecutor": "manual",
+
   "approvalPolicy": {
     "requireBeforeImplementation": false,
     "requireForAuthChanges": false,
@@ -10,6 +13,7 @@
     "requireForBuildConfigChanges": false,
     "requireForDeletingFiles": false
   },
+
   "qualityGates": {
     "requireSourceRepoCleanBeforeRun": false,
     "requireFinalArtifactBuild": false,
@@ -18,6 +22,7 @@
     "blockOnProtectedPathModificationWithoutApproval": true,
     "warnIfNoSmokeTest": true
   },
+
   "components": [
     {
       "name": "ui",
@@ -36,12 +41,12 @@
       },
       "artifact": {
         "type": "static-bundle",
-        "outputGlob": "dist/**/*"
+        "outputPath": "dist/index.html"
       },
       "dependencies": [],
       "produces": ["static-assets"],
       "protectedPaths": ["public/"],
-      "forbiddenPaths": ["node_modules/"]
+      "forbiddenPaths": ["node_modules/", ".env"]
     },
     {
       "name": "backend",
@@ -95,11 +100,14 @@
       "forbiddenPaths": ["ui/", "backend/"]
     }
   ],
+
   "globalProtectedPaths": [".git/", ".env", "*.key", "*.pem"],
+
   "memory": {
     "enabled": true,
     "path": "engineering_memory.md"
   },
+
   "artifacts": {
     "rootDir": ".sea/runs"
   }

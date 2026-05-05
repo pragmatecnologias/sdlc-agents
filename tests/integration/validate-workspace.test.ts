@@ -59,7 +59,8 @@ describe('validate-workspace for WAR_COMPOSITE_APP', () => {
     try {
       const workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
       const output = runCli(`validate-workspace -w ${workspacePath}`, tmpDir);
-      expect(output).toContain('Validation PASSED');
+      expect(output).toContain('Status');
+      expect(output).toContain('PASSED');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
@@ -140,7 +141,8 @@ describe('validate-workspace for WAR_COMPOSITE_APP', () => {
     try {
       const workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
       const output = runCli(`validate-workspace -w ${workspacePath}`, tmpDir);
-      expect(output).toContain('Components:        3');
+      expect(output).toContain('Components');
+      expect(output).toContain('3');
       expect(output).toContain('WAR_COMPOSITE_APP');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });

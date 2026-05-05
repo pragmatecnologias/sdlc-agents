@@ -10,7 +10,7 @@ SEA runs a structured 19-phase workflow to analyze requirements, plan implementa
 
 - **Orchestrator is the control brain** - Coordinates all agents and executors
 - **Agents provide specialized reasoning** - Each agent has a specific role (requirement intake, architecture planning, impact analysis, etc.)
-- **Executors perform bounded implementation work** - Manual (MVP), Copilot, Claude Code, Codex, OpenClaw, Shell
+- **Executors perform bounded implementation work** - Manual executor (MVP)
 - **Truth comes from evidence** - git diff, test output, build output, artifact inspection. Never from executor claims
 - **Evidence-driven decisions** - Brutal reality check classifies evidence as REAL/PARTIAL/FAKE/MISSING
 
@@ -24,8 +24,21 @@ npm run build
 ## Quick Start
 
 ```bash
-# Initialize a workspace
-sea init --workspace my-app
+# Interactive mode (guided control panel) — recommended for daily use
+sea
+sea interactive
+sea ui
+
+# Validate workspace before running
+sea validate-workspace -w .sea/workspace.json
+
+# Show run status
+sea status <run-id> -w .sea/workspace.json
+sea status <run-id> -w .sea/workspace.json --json
+
+# Show next recommended action
+sea next <run-id> -w .sea/workspace.json
+sea next <run-id> -w .sea/workspace.json --json
 
 # Run the full workflow (planning + execution + verification)
 sea run "Add PDF export" --workspace .sea/workspace.json

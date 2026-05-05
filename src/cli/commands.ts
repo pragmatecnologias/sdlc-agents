@@ -32,6 +32,7 @@ import { validatePaths, PathPolicy } from '../tools/pathValidator.js';
 import { runCommand } from '../tools/commandRunner.js';
 import { resolveComponentPathFromState, getWorkspaceRoot, resolveSeaDir, resolveWorkspaceRoot, resolveRunBaseDir, resolveRunDir } from '../tools/resolvePath.js';
 import { resolveComponentArtifact } from '../tools/artifactResolver.js';
+import { renderReport, renderReportJson } from '../ui/renderers.js';
 
 const logger = createLogger('CLI');
 
@@ -104,8 +105,9 @@ export function registerCommands(program: Command): void {
     .command('validate-workspace')
     .description('Validate workspace configuration')
     .requiredOption('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
     .action(async (options) => {
-      await handleValidateWorkspace(options.workspace);
+      await handleValidateWorkspace(options.workspace, options.json);
     });
 
   // after-execution command
@@ -156,8 +158,9 @@ export function registerCommands(program: Command): void {
     .description('Show final report for a run')
     .argument('<runId>', 'Run ID')
     .option('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
     .action(async (runId, options) => {
-      await handleReport(runId, options.workspace);
+      await handleReport(runId, options.workspace, options.json);
     });
 
   // memory command
@@ -168,6 +171,44 @@ export function registerCommands(program: Command): void {
     .option('-w, --workspace <path>', 'Path to workspace.json')
     .action(async (query, options) => {
       await handleMemory(query, options.workspace);
+    });
+
+  // status command
+  program
+    .command('status')
+    .description('Show run board / operator dashboard')
+    .argument('<runId>', 'Run ID')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
+    .action(async (runId, options) => {
+      await handleStatus(runId, options.workspace, options.json);
+    });
+
+  // next command
+  program
+    .command('next')
+    .description('Show next recommended action for a run')
+    .argument('<runId>', 'Run ID')
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .option('--json', 'Output as JSON')
+    .action(async (runId, options) => {
+      await handleNext(runId, options.workspace, options.json);
+    });
+
+  // interactive mode (sea with no subcommand, or 'interactive', or 'ui')
+  program
+    .command('interactive')
+    .description('Open guided interactive control panel')
+    .action(async () => {
+      await handleInteractive();
+    });
+
+  // ui alias
+  program
+    .command('ui')
+    .description('Open guided interactive control panel')
+    .action(async () => {
+      await handleInteractive();
     });
 }
 
@@ -708,13 +749,19 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
 // validate-workspace
 // ---------------------------------------------------------------------------
 
-async function handleValidateWorkspace(workspacePath: string): Promise<void> {
+async function handleValidateWorkspace(workspacePath: string, asJson?: boolean): Promise<void> {
   logger.info(`Validating workspace: ${workspacePath}`);
 
-  const { validateWorkspaceConfig, printValidationResult } = await import('../tools/workspaceValidator.js');
+  const { validateWorkspaceConfig } = await import('../tools/workspaceValidator.js');
+  const { renderValidationResult, renderValidationJson } = await import('../ui/renderers.js');
   const result = await validateWorkspaceConfig(workspacePath);
 
-  printValidationResult(result);
+  if (asJson) {
+    console.log(renderValidationJson(result));
+    return;
+  }
+
+  renderValidationResult(result);
 
   if (result.status === 'failed') {
     process.exit(1);
@@ -1015,7 +1062,7 @@ async function handleResume(runId: string, workspacePath?: string): Promise<void
 // report
 // ---------------------------------------------------------------------------
 
-async function handleReport(runId: string, workspacePath?: string): Promise<void> {
+async function handleReport(runId: string, workspacePath?: string, asJson?: boolean): Promise<void> {
   logger.info(`Showing report for run ${runId}`);
 
   try {
@@ -1026,6 +1073,11 @@ async function handleReport(runId: string, workspacePath?: string): Promise<void
     const state = JSON.parse(stateContent) as WorkspaceState;
 
     const runPaths = getRunPaths(runId, baseDir);
+
+    if (asJson) {
+      console.log(renderReportJson(state, workspacePath || path.join(baseDir, 'workspace.json')));
+      return;
+    }
 
     console.log(`\n=========================================`);
     console.log(`  SEA Run Report: ${runId}`);
@@ -1278,4 +1330,84 @@ async function handleMemory(query?: string, workspacePath?: string): Promise<voi
       console.log(content);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+async function handleStatus(runId: string, workspacePath?: string, asJson?: boolean): Promise<void> {
+  if (!workspacePath) {
+    const { findWorkspaceFromCwd } = await import('../services/workspaceService.js');
+    const detection = await findWorkspaceFromCwd(process.cwd());
+    if (!detection.found) {
+      console.error('No workspace found. Use -w to specify workspace path.');
+      process.exit(1);
+    }
+    workspacePath = detection.workspacePath!;
+  }
+
+  const { getRunState } = await import('../services/workspaceService.js');
+  const { renderRunBoard, renderStatusJson, buildStatusDisplay } = await import('../ui/renderers.js');
+  type WorkspaceState = import('../state/workspaceState.js').WorkspaceState;
+
+  const stateResult = await getRunState(runId, workspacePath);
+  if (!stateResult) {
+    console.error(`Run ${runId} not found.`);
+    process.exit(1);
+  }
+
+  const state = stateResult.state as unknown as WorkspaceState;
+  const display = buildStatusDisplay(state, workspacePath);
+
+  if (asJson) {
+    console.log(renderStatusJson(display, workspacePath));
+  } else {
+    renderRunBoard(display, workspacePath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// next
+// ---------------------------------------------------------------------------
+
+async function handleNext(runId: string, workspacePath?: string, asJson?: boolean): Promise<void> {
+  if (!workspacePath) {
+    const { findWorkspaceFromCwd } = await import('../services/workspaceService.js');
+    const detection = await findWorkspaceFromCwd(process.cwd());
+    if (!detection.found) {
+      console.error('No workspace found. Use -w to specify workspace path.');
+      process.exit(1);
+    }
+    workspacePath = detection.workspacePath!;
+  }
+
+  const { getRunState } = await import('../services/workspaceService.js');
+  const { determineNextAction } = await import('../services/nextActionService.js');
+  const { renderNextAction, renderNextActionJson } = await import('../ui/renderers.js');
+  type WorkspaceState = import('../state/workspaceState.js').WorkspaceState;
+
+  const stateResult = await getRunState(runId, workspacePath);
+  if (!stateResult) {
+    console.error(`Run ${runId} not found.`);
+    process.exit(1);
+  }
+
+  const state = stateResult.state as unknown as WorkspaceState;
+  const nextAction = determineNextAction(state);
+
+  if (asJson) {
+    console.log(renderNextActionJson(nextAction));
+  } else {
+    renderNextAction(nextAction, workspacePath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// interactive
+// ---------------------------------------------------------------------------
+
+async function handleInteractive(): Promise<void> {
+  const { runInteractiveMode } = await import('../ui/interactive.js');
+  await runInteractiveMode();
 }

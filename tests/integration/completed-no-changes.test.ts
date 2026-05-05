@@ -37,7 +37,7 @@ describe('completed_no_changes handling', () => {
     });
 
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sea-no-changes-'));
-    await fs.cp(FIXTURE, tmpDir, { recursive: true });
+    await fs.cp(FIXTURE, tmpDir, { recursive: true, filter: (src) => !src.endsWith('.git') });
     workspacePath = path.join(tmpDir, '.sea', 'workspace.json');
 
     // Init git
