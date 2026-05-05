@@ -18,9 +18,10 @@ const logger = createLogger('ArtifactInspectionAgent');
  * Create the artifact inspection agent function
  */
 export function createArtifactInspectionAgent(): (
-  state: WorkspaceState
+  state: WorkspaceState,
+  onlyComponent?: string
 ) => Promise<Partial<WorkspaceState>> {
-  return async (state: WorkspaceState) => {
+  return async (state: WorkspaceState, onlyComponent?: string) => {
     logger.info('Running artifact inspection agent');
 
     const { componentStates, workspace } = state;
@@ -34,15 +35,53 @@ export function createArtifactInspectionAgent(): (
     const inspections: ArtifactInspectionReport[] = [];
 
     for (const [componentName, componentState] of Object.entries(componentStates || {})) {
+      // If onlyComponent is specified, skip others
+      if (onlyComponent && componentName !== onlyComponent) continue;
+
       const component = workspace.components?.find(c => c.name === componentName);
       if (!component || !component.artifact) continue;
 
-      // Only inspect if component was modified
-      if (componentState.changeRole === 'no_change') continue;
+      // Only inspect if component was modified (unless targeting a specific component)
+      if (!onlyComponent && componentState.changeRole === 'no_change') continue;
 
       // Determine the artifact path using centralized resolution
       const componentPath = resolveComponentPathFromState(state, component);
-      const artifactPath = resolveArtifactPath(componentPath, component.artifact.outputPath);
+      let artifactPath = component.artifact.outputPath
+        ? resolveArtifactPath(componentPath, component.artifact.outputPath)
+        : undefined;
+
+      // Support outputGlob: find matching file
+      if (!artifactPath && component.artifact.outputGlob) {
+        const globPattern = path.resolve(componentPath, component.artifact.outputGlob);
+        const globBase = path.dirname(globPattern);
+        const globMatch = path.basename(globPattern).replace(/\*/g, '.*');
+        try {
+          const entries = await fs.readdir(globBase);
+          const matched = entries.find(e => new RegExp(`^${globMatch}$`).test(e));
+          if (matched) {
+            artifactPath = path.join(globBase, matched);
+          }
+        } catch {
+          // directory doesn't exist or can't be read
+        }
+      }
+
+      if (!artifactPath) {
+        const skipReport: ArtifactInspectionReport = {
+          component: componentName,
+          artifactType: component.artifact.type,
+          artifactPath: '(none resolved)',
+          exists: false,
+          readable: false,
+          entriesChecked: {},
+          warnings: [],
+          errors: ['No outputPath or outputGlob resolved'],
+          status: 'failed',
+        };
+        inspections.push(skipReport);
+        updatedComponentStates[componentName].artifactInspection = skipReport;
+        continue;
+      }
 
       try {
         let report: ArtifactInspectionReport;

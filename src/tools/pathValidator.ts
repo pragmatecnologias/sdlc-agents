@@ -84,23 +84,26 @@ export function validatePaths(
   };
 
   const { allowedPaths, protectedPaths, forbiddenPaths } = policy;
-  const hasAllowedRestriction = allowedPaths.length > 0;
+  const safeAllowed = allowedPaths ?? [];
+  const safeProtected = protectedPaths ?? [];
+  const safeForbidden = forbiddenPaths ?? [];
+  const hasAllowedRestriction = safeAllowed.length > 0;
 
   for (const filePath of changedFiles) {
     // 1. Forbidden takes highest priority
-    if (matchesAnyPattern(filePath, forbiddenPaths)) {
+    if (matchesAnyPattern(filePath, safeForbidden)) {
       result.forbiddenViolations.push(filePath);
       continue;
     }
 
     // 2. Protected takes second priority
-    if (matchesAnyPattern(filePath, protectedPaths)) {
+    if (matchesAnyPattern(filePath, safeProtected)) {
       result.protectedViolations.push(filePath);
       continue;
     }
 
     // 3. Scope check — only when allowedPaths has entries
-    if (hasAllowedRestriction && !matchesAnyPattern(filePath, allowedPaths)) {
+    if (hasAllowedRestriction && !matchesAnyPattern(filePath, safeAllowed)) {
       result.outOfScopeChanges.push(filePath);
       continue;
     }

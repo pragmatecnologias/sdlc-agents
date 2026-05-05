@@ -52,8 +52,9 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
       timeout: 10000,
     });
 
-    // WAR artifact is pre-generated in fixture at war-builder/output/app.war
-    // No need to rebuild - test uses the existing fixture artifact
+    // Remove pre-generated WAR so test proves it gets built during verify
+    const warOutputDir = path.join(tmpDir, 'war-builder', 'output');
+    try { await fs.rm(warOutputDir, { recursive: true, force: true }); } catch {}
   });
 
   afterAll(async () => {
@@ -144,10 +145,11 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
     const diffPath = path.join(tmpDir, '.sea', 'runs', runId, 'components', 'ui', 'diff.patch');
     const diff = await fs.readFile(diffPath, 'utf-8');
     expect(diff.length).toBeGreaterThan(0);
-    expect(diff).toContain('uiVersion') || diff.includes('index.ts');
+    expect(diff).toContain('uiVersion');
+    expect(diff).toContain('index.ts');
   });
 
-  it('7. sea verify runs commands and saves output', () => {
+  it('7. sea verify runs commands and saves output', async () => {
     const output = runCli(`verify ${runId} -w ${workspacePath}`);
     expect(output).toContain('Verification Summary');
     expect(output).toContain('Commands run:');
@@ -157,6 +159,11 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
     const state = JSON.parse(require('fs').readFileSync(statePath, 'utf-8'));
     expect(state.verification).toBeTruthy();
     expect(state.verification.totalCommandsRun).toBeGreaterThan(0);
+
+    // Verify that war-builder's custom:package command built the WAR
+    const warPath = path.join(tmpDir, 'war-builder', 'output', 'app.war');
+    const warExists = await fs.access(warPath).then(() => true).catch(() => false);
+    expect(warExists).toBe(true);
   });
 
   it('8. sea inspect-artifact inspects WAR and confirms structure', () => {

@@ -97,6 +97,7 @@ export type RunStatus =
   | 'planning'
   | 'awaiting_approval'
   | 'awaiting_manual_execution'
+  | 'evidence_captured'
   | 'executing'
   | 'verifying'
   | 'reviewing'

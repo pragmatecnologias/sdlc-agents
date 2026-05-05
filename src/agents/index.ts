@@ -24,7 +24,7 @@ import { createFinalDecisionAgent } from './finalDecisionAgent.js';
 import { createMemoryUpdateAgent } from './memoryUpdateAgent.js';
 import { createReleaseWriterAgent } from './releaseWriterAgent.js';
 
-export type SeaAgentFn = (state: WorkspaceState) => Promise<Partial<WorkspaceState>>;
+export type SeaAgentFn = (state: WorkspaceState, ...args: any[]) => Promise<Partial<WorkspaceState>>;
 
 export interface SeaAgents {
   memoryRetrievalAgent: SeaAgentFn;

@@ -96,6 +96,15 @@ export function registerCommands(program: Command): void {
       await handleRequest(runId, options.component, options.output, options.workspace);
     });
 
+  // validate-workspace command
+  program
+    .command('validate-workspace')
+    .description('Validate workspace configuration')
+    .requiredOption('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (options) => {
+      await handleValidateWorkspace(options.workspace);
+    });
+
   // after-execution command
   program
     .command('after-execution')
@@ -151,10 +160,11 @@ export function registerCommands(program: Command): void {
   // memory command
   program
     .command('memory')
-    .description('Search or show memory')
+    .description('Search or show engineering memory')
     .argument('[query]', 'Search query')
-    .action(async (query) => {
-      await handleMemory(query);
+    .option('-w, --workspace <path>', 'Path to workspace.json')
+    .action(async (query, options) => {
+      await handleMemory(query, options.workspace);
     });
 }
 
@@ -596,7 +606,7 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
   const now = new Date().toISOString();
   const executorResult: ExecutorResult = {
     executor: 'manual',
-    status: changedFiles.length > 0 ? 'completed' : 'completed',
+    status: changedFiles.length > 0 ? 'completed' : 'completed_no_changes',
     changedFiles,
     diffPath: path.relative(runPaths.runDir, diffPath),
     startedAt: componentState.executorResult?.startedAt || now,
@@ -619,10 +629,28 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     protectedPathViolations: validation.protectedViolations,
     executorResult,
     dirtyAfter: changedFiles.length > 0,
-    componentDecision: changedFiles.length > 0 ? 'implemented' : componentState.componentDecision,
+    componentDecision: changedFiles.length > 0 ? 'implemented' : 'pending',
   };
 
   state.componentStates[component] = updatedComponentState;
+
+  // Update runStatus: check if all modify components have been captured
+  const modifyComponents = Object.entries(state.componentStates)
+    .filter(([, cs]) => cs.changeRole === 'modify');
+  const uncaptured = modifyComponents.filter(
+    ([, cs]) => !cs.executorResult || cs.executorResult.status === 'manual_required'
+  );
+  if (uncaptured.length === 0 && modifyComponents.length > 0) {
+    state.runStatus = 'evidence_captured';
+    state.updatedAt = new Date().toISOString();
+    console.log(`\n  All ${modifyComponents.length} component(s) captured. Run status: evidence_captured`);
+    console.log(`  Next: sea verify ${runId} -w <workspace>`);
+  } else {
+    console.log(`\n  ${uncaptured.length} component(s) still need evidence capture`);
+    for (const [name] of uncaptured) {
+      console.log(`    - sea after-execution ${runId} -c ${name} -w <workspace>`);
+    }
+  }
 
   // Save updated state
   await saveState(state, baseDir);
@@ -656,6 +684,181 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
 }
 
 // ---------------------------------------------------------------------------
+// validate-workspace
+// ---------------------------------------------------------------------------
+
+async function handleValidateWorkspace(workspacePath: string): Promise<void> {
+  logger.info(`Validating workspace: ${workspacePath}`);
+
+  let workspaceConfig: WorkspaceConfig;
+  try {
+    const raw = await fs.readFile(path.resolve(workspacePath), 'utf-8');
+    workspaceConfig = JSON.parse(raw);
+  } catch (err) {
+    console.error(`  FAIL  Cannot read workspace file: ${workspacePath}`);
+    process.exit(1);
+  }
+
+  const workspaceRoot = resolveWorkspaceRoot(workspacePath);
+  console.log(`  Workspace file:    ${workspacePath}`);
+  console.log(`  Workspace root:    ${workspaceRoot}`);
+  console.log(`  Workspace name:    ${workspaceConfig.workspaceName || '(not set)'}`);
+  console.log(`  Profile:           ${workspaceConfig.projectProfile || '(not set)'}`);
+
+  let hasErrors = false;
+
+  // Check workspace root exists
+  try {
+    await fs.access(workspaceRoot);
+  } catch {
+    console.error(`  FAIL  Workspace root does not exist: ${workspaceRoot}`);
+    hasErrors = true;
+  }
+
+  // Validate projectProfile is recognized
+  if (workspaceConfig.projectProfile) {
+    const knownProfiles = [
+      'SINGLE_REPO_FRONTEND', 'SINGLE_REPO_BACKEND', 'MONOREPO_WEB_APP',
+      'MULTI_REPO_ENTERPRISE_APP', 'WAR_COMPOSITE_APP', 'SPRING_BOOT_SERVICE',
+      'NODE_API', 'REACT_APP', 'ANGULAR_APP', 'VUE_APP', 'CHROME_EXTENSION',
+      'THREEJS_GAME', 'PYTHON_CLI', 'LIBRARY_PACKAGE', 'MICROSERVICES_WORKSPACE',
+      'INFRASTRUCTURE_REPO', 'DOCUMENTATION_REPO', 'CUSTOM',
+    ];
+    if (!knownProfiles.includes(workspaceConfig.projectProfile)) {
+      console.error(`  WARN  Unknown project profile: ${workspaceConfig.projectProfile}`);
+    }
+  } else {
+    console.log(`  WARN  No projectProfile set — profile detection will be used`);
+  }
+
+  // Validate components
+  const components = workspaceConfig.components || [];
+  if (components.length === 0) {
+    console.error(`  FAIL  No components defined`);
+    hasErrors = true;
+  }
+
+  console.log(`  Components:        ${components.length}`);
+
+  const componentNames = new Set<string>();
+
+  for (const comp of components) {
+    const prefix = `  [${comp.name}]`;
+
+    if (!comp.name) {
+      console.error(`${prefix} FAIL  Component has no name`);
+      hasErrors = true;
+      continue;
+    }
+
+    if (componentNames.has(comp.name)) {
+      console.error(`${prefix} FAIL  Duplicate component name: ${comp.name}`);
+      hasErrors = true;
+    }
+    componentNames.add(comp.name);
+
+    // Resolve and validate component path
+    const compPath = path.isAbsolute(comp.path) ? comp.path : path.resolve(workspaceRoot, comp.path);
+    try {
+      const stat = await fs.stat(compPath);
+      if (!stat.isDirectory()) {
+        console.error(`${prefix} FAIL  Component path is not a directory: ${compPath}`);
+        hasErrors = true;
+      }
+    } catch {
+      console.error(`${prefix} FAIL  Component path does not exist: ${compPath}`);
+      hasErrors = true;
+      continue;
+    }
+
+    // Check if component path is a git repo (warning for test fixtures)
+    const gitDir = path.join(compPath, '.git');
+    try {
+      await fs.access(gitDir);
+      console.log(`${prefix} path: ${compPath} (git repo: yes)`);
+    } catch {
+      console.log(`${prefix} path: ${compPath} (git repo: no — WARN)`);
+    }
+
+    // Validate commands are present and non-empty for source/application components
+    const verifyRoles = ['source', 'application', 'service', 'packager', 'assembler', 'test-suite'];
+    const isVerifyTarget = verifyRoles.includes(comp.role) || verifyRoles.includes(comp.kind);
+    if (isVerifyTarget && (!comp.commands || Object.keys(comp.commands).length === 0)) {
+      console.error(`${prefix} FAIL  No commands configured for component that will be verified`);
+      hasErrors = true;
+    } else if (isVerifyTarget && comp.commands) {
+      const nonEmpty = Object.entries(comp.commands).filter(([, v]) => typeof v === 'string' && v.trim().length > 0);
+      if (nonEmpty.length === 0) {
+        console.error(`${prefix} FAIL  All commands are empty for verifiable component`);
+        hasErrors = true;
+      }
+    }
+
+    // Validate assembly/packager components have artifact config
+    const artifactRoles = ['packager', 'assembler'];
+    const isArtifactComponent = artifactRoles.includes(comp.role) || comp.kind === 'assembly';
+    if (isArtifactComponent && !comp.artifact) {
+      console.error(`${prefix} FAIL  Assembly/packager component must have artifact config`);
+      hasErrors = true;
+    }
+
+    // Validate artifact config details
+    if (comp.artifact && comp.artifact.type !== 'none') {
+      if (comp.artifact.type === 'war' || comp.artifact.type === 'jar' || comp.artifact.type === 'ear') {
+        if (!comp.artifact.outputPath && !comp.artifact.outputGlob) {
+          console.error(`${prefix} FAIL  ${comp.artifact.type.toUpperCase()} artifact must have outputPath or outputGlob`);
+          hasErrors = true;
+        }
+      }
+    }
+
+    // Validate dependencies reference existing components
+    if (comp.dependencies && comp.dependencies.length > 0) {
+      for (const dep of comp.dependencies) {
+        if (!componentNames.has(dep) && !componentNames.has(dep)) {
+          // May reference a component not yet seen (check after all names are collected)
+        }
+      }
+    }
+  }
+
+  // Second pass: validate dependencies reference existing components
+  for (const comp of components) {
+    if (comp.dependencies && comp.dependencies.length > 0) {
+      for (const dep of comp.dependencies) {
+        if (!componentNames.has(dep)) {
+          const prefix = `  [${comp.name}]`;
+          console.error(`${prefix} WARN  Dependency '${dep}' does not reference a known component`);
+          hasErrors = true;
+        }
+      }
+    }
+  }
+
+  // Validate protectedPaths and forbiddenPaths are arrays
+  for (const comp of components) {
+    const prefix = `  [${comp.name}]`;
+    if (comp.protectedPaths && !Array.isArray(comp.protectedPaths)) {
+      console.error(`${prefix} FAIL  protectedPaths must be an array`);
+      hasErrors = true;
+    }
+    if (comp.forbiddenPaths && !Array.isArray(comp.forbiddenPaths)) {
+      console.error(`${prefix} FAIL  forbiddenPaths must be an array`);
+      hasErrors = true;
+    }
+  }
+
+  // Summary
+  console.log();
+  if (hasErrors) {
+    console.error('Validation FAILED — fix the errors above before running sea plan/run');
+    process.exit(1);
+  } else {
+    console.log('Validation PASSED — workspace is ready for use');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // verify
 // ---------------------------------------------------------------------------
 
@@ -671,9 +874,10 @@ async function handleVerify(runId: string, workspacePath?: string): Promise<void
     process.exit(1);
   }
 
-  // Find components that need verification
+  // Find components that need verification (any active changeRole except no_change/blocked/unknown)
+  const VERIFIABLE_ROLES = new Set(['modify', 'verify_only', 'package_only', 'artifact_verify']);
   const componentsToVerify = Object.entries(state.componentStates)
-    .filter(([, cs]) => cs.changeRole === 'modify' || cs.changeRole === 'verify_only');
+    .filter(([, cs]) => VERIFIABLE_ROLES.has(cs.changeRole));
 
   if (componentsToVerify.length === 0) {
     console.log(`No components require verification for run ${runId}.`);
@@ -763,21 +967,38 @@ async function handleInspectArtifact(
 
   // Resolve component path and artifact path
   const componentPath = resolveComponentPathFromState(state, componentConfig);
-  const artifactPath = resolveArtifactPath(componentPath, componentConfig.artifact.outputPath);
+  let artifactPath = componentConfig.artifact.outputPath
+    ? resolveArtifactPath(componentPath, componentConfig.artifact.outputPath)
+    : undefined;
+
+  // Support outputGlob: find matching file
+  if (!artifactPath && componentConfig.artifact.outputGlob) {
+    const globPattern = path.resolve(componentPath, componentConfig.artifact.outputGlob);
+    const globBase = path.dirname(globPattern);
+    const globMatch = path.basename(globPattern).replace(/\*/g, '.*');
+    try {
+      const entries = await fs.readdir(globBase);
+      const matched = entries.find(e => new RegExp(`^${globMatch}$`).test(e));
+      if (matched) {
+        artifactPath = path.join(globBase, matched);
+      }
+    } catch {
+      // directory doesn't exist or can't be read
+    }
+  }
+
+  if (!artifactPath) {
+    console.error(`No artifact path or outputGlob resolved for component '${componentName}'`);
+    process.exit(1);
+  }
 
   // Check if artifact exists
   let artifactExists = false;
   try {
-    await fs.access(artifactPath);
-    artifactExists = true;
+    const stat = await fs.stat(artifactPath);
+    artifactExists = stat.isFile() || stat.isDirectory();
   } catch {
-    // try as directory (for built artifacts)
-    try {
-      const stat = await fs.stat(artifactPath);
-      artifactExists = stat.isFile();
-    } catch {
-      artifactExists = false;
-    }
+    artifactExists = false;
   }
 
   if (!artifactExists) {
@@ -788,20 +1009,27 @@ async function handleInspectArtifact(
 
   console.log(`Inspecting artifact: ${artifactPath}`);
 
-  // Use artifact inspection agent
+  // Use artifact inspection agent — inspect only the requested component
   const agents = createSeaAgents({
     memoryPath: state.workspace.memory?.path || path.join(baseDir, 'engineering_memory.md'),
   });
 
-  // Run artifact inspection
-  const result = await agents.artifactInspectionAgent(state);
+  // Run artifact inspection for single component
+  const result = await agents.artifactInspectionAgent(state, componentName);
 
   // Merge result into state
   if (result.artifactInspections) {
-    state.artifactInspections = result.artifactInspections;
+    // Replace any existing inspection for this component
+    state.artifactInspections = [
+      ...(state.artifactInspections || []).filter((ai: any) => ai.component !== componentName),
+      ...(result.artifactInspections || []),
+    ];
   }
-  if (result.componentStates) {
-    state.componentStates = { ...state.componentStates, ...result.componentStates };
+  if (result.componentStates && result.componentStates[componentName]) {
+    state.componentStates = {
+      ...state.componentStates,
+      [componentName]: result.componentStates[componentName],
+    };
   }
   await saveState(state, baseDir);
 
@@ -1073,7 +1301,19 @@ async function handleReport(runId: string, workspacePath?: string): Promise<void
     // Next action
     console.log(`\n--- Next Action ---`);
     if (state.runStatus === 'awaiting_manual_execution') {
-      console.log(`  Run: sea after-execution ${runId} -c <component> -w ${workspacePath || '.sea/workspace.json'}`);
+      // Check which components still need capture
+      const uncaptured = Object.entries(state.componentStates || {})
+        .filter(([, cs]) => cs.changeRole === 'modify' && (!cs.executorResult || cs.executorResult.status === 'manual_required'));
+      if (uncaptured.length > 0) {
+        console.log(`  ${uncaptured.length} component(s) still need evidence:`);
+        for (const [name] of uncaptured) {
+          console.log(`    sea after-execution ${runId} -c ${name} -w ${workspacePath || '.sea/workspace.json'}`);
+        }
+      } else {
+        console.log(`  All components captured. Run: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
+      }
+    } else if (state.runStatus === 'evidence_captured' && !state.verification) {
+      console.log(`  Run: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
     } else if (state.finalDecision?.decision === 'NEEDS_FIXES') {
       console.log(`  Review required fixes above, make changes, then re-run verification.`);
       console.log(`  Run: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
@@ -1096,23 +1336,34 @@ async function handleReport(runId: string, workspacePath?: string): Promise<void
 // memory
 // ---------------------------------------------------------------------------
 
-async function handleMemory(query?: string): Promise<void> {
-  // Default memory path
-  let memoryPath = '.sea/engineering_memory.md';
+async function handleMemory(query?: string, workspacePath?: string): Promise<void> {
+  // Default memory path (relative to sea dir)
+  const defaultMemoryFile = 'engineering_memory.md';
+  let memoryPath: string | undefined;
+
+  // Determine workspace location
+  const possibleWorkspacePaths = workspacePath
+    ? [workspacePath]
+    : ['.sea/workspace.json'];
+  const baseDir = workspacePath ? resolveSeaDir(workspacePath) : '.sea';
 
   // Try to load workspace.json to get configured memory path
-  const possibleWorkspacePaths = ['.sea/workspace.json'];
   for (const wp of possibleWorkspacePaths) {
     try {
       const content = await fs.readFile(wp, 'utf-8');
       const config = JSON.parse(content) as WorkspaceConfig;
       if (config.memory?.path) {
-        memoryPath = config.memory.path;
+        memoryPath = path.resolve(baseDir, config.memory.path);
         break;
       }
     } catch {
       continue;
     }
+  }
+
+  // Default if no configured path
+  if (!memoryPath) {
+    memoryPath = path.resolve(baseDir, defaultMemoryFile);
   }
 
   let content: string;

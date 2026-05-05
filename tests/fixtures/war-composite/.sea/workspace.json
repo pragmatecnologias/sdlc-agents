@@ -65,7 +65,10 @@
       "technology": "shell",
       "commands": {
         "build": "echo 'WAR built'",
-        "package": "node build-war.js"
+        "test": "echo 'WAR tests passed'",
+        "custom": {
+          "package": "node build-war.cjs"
+        }
       },
       "artifact": {
         "type": "war",

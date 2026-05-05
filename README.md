@@ -95,11 +95,12 @@ sea memory "authentication" -w .sea/workspace.json
 The executor is configured in `.sea/workspace.json` under `defaultExecutor`:
 
 - **manual** (working) - Generates markdown execution request files. Human performs work externally, then captures evidence with `sea after-execution`
-- **copilot-cli** - Not implemented. Interface exists, adapter needs implementation.
-- **claude-code** - Not implemented. Interface exists, adapter needs implementation.
-- **codex-cli** - Not implemented. Interface exists, adapter needs implementation.
-- **openclaw** - Not implemented. Interface exists, adapter needs implementation.
-- **shell** - Not implemented. Interface exists, adapter needs implementation.
+- **mock** (test double) - Simulates execution with configurable results. Used in tests only.
+- **copilot-cli** - Not implemented. The `ExecutorAdapter` interface is defined; an adapter file needs to be created.
+- **claude-code** - Not implemented. The `ExecutorAdapter` interface is defined; an adapter file needs to be created.
+- **codex-cli** - Not implemented. The `ExecutorAdapter` interface is defined; an adapter file needs to be created.
+- **openclaw** - Not implemented. The `ExecutorAdapter` interface is defined; an adapter file needs to be created.
+- **shell** - Not implemented. The `ExecutorAdapter` interface is defined; an adapter file needs to be created.
 
 ## Project Profiles + Implementation Truth Matrix
 

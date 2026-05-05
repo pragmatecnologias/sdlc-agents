@@ -107,6 +107,7 @@ export type ExecutorType = z.infer<typeof ExecutorTypeSchema>;
 
 export const ExecutorStatusSchema = z.enum([
   'completed',
+  'completed_no_changes',
   'cancelled',
   'failed',
   'manual_required',
