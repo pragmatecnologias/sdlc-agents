@@ -125,10 +125,10 @@ export function renderRunBoard(display: StatusDisplay, workspacePath: string): v
   printDivider();
   console.log('\nNext Recommended Action');
   console.log(`  ${display.nextAction.reason}`);
-  if (display.nextAction.command) {
-    const cmd = formatNextActionCommand(display.nextAction, workspacePath);
+  const runCmd = formatNextActionCommand(display.nextAction, workspacePath);
+  if (runCmd) {
     console.log(`\n  Command:`);
-    console.log(`    ${cmd}`);
+    console.log(`    ${runCmd}`);
   }
   if (display.nextAction.component) {
     console.log(`  Component: ${display.nextAction.component}`);
@@ -162,9 +162,7 @@ export function renderStatusJson(display: StatusDisplay, workspacePath: string):
     blockers: display.blockers,
     nextAction: {
       ...display.nextAction,
-      command: display.nextAction.command
-        ? formatNextActionCommand(display.nextAction, workspacePath)
-        : undefined,
+      command: formatNextActionCommand(display.nextAction, workspacePath),
     },
   }, null, 2);
 }
@@ -189,8 +187,8 @@ export function renderNextAction(action: NextAction, workspacePath: string): voi
     }
   }
 
-  if (action.command) {
-    const cmd = formatNextActionCommand(action, workspacePath);
+  const cmd = formatNextActionCommand(action, workspacePath);
+  if (cmd) {
     console.log(`\n  Command:`);
     console.log(`    ${cmd}`);
   }
@@ -200,7 +198,7 @@ export function renderNextAction(action: NextAction, workspacePath: string): voi
 
 export function renderNextActionJson(action: NextAction, workspacePath?: string): string {
   const output: Record<string, unknown> = { ...action };
-  if (action.command && workspacePath) {
+  if (workspacePath) {
     output.command = formatNextActionCommand(action, workspacePath);
   }
   return JSON.stringify(output, null, 2);
@@ -414,10 +412,15 @@ export function renderReport(state: WorkspaceState, workspacePath: string): void
 
   // Next action
   if (state.runStatus !== 'completed' && state.runStatus !== 'failed') {
+    const nextAction = determineNextAction(state);
+    const nextCmd = formatNextActionCommand(nextAction, workspacePath);
     printDivider();
     console.log('\nNext Action');
     console.log(`  Status: ${state.runStatus}`);
-    console.log(`  Command: sea resume ${state.runId} -w ${workspacePath}`);
+    console.log(`  ${nextAction.reason}`);
+    if (nextCmd) {
+      console.log(`  Command: ${nextCmd}`);
+    }
   }
 
   console.log('');
@@ -457,9 +460,14 @@ export function renderReportJson(state: WorkspaceState, workspacePath: string): 
     workspacePath,
     components,
     finalDecision: state.finalDecision,
-    nextAction: {
-      command: `sea resume ${state.runId} -w ${workspacePath}`,
-    },
+    nextAction: (() => {
+      const na = determineNextAction(state);
+      return {
+        type: na.type,
+        reason: na.reason,
+        command: formatNextActionCommand(na, workspacePath),
+      };
+    })(),
   }, null, 2);
 }
 

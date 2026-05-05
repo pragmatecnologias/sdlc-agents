@@ -187,8 +187,9 @@ async function handleStartRun(workspacePath: string): Promise<void> {
       const state = stateResult.state as unknown as WorkspaceState;
       const nextAction = determineNextAction(state);
       console.log('\n   Next:', nextAction.reason);
-      if (nextAction.command) {
-        console.log(`   ${formatNextActionCommand(nextAction, workspacePath)}`);
+      const nextCmd = formatNextActionCommand(nextAction, workspacePath);
+      if (nextCmd) {
+        console.log(`   ${nextCmd}`);
       }
     }
   }
@@ -555,8 +556,9 @@ async function handleRunVerification(runId: string, workspacePath: string): Prom
       // Show next action
       const nextAction = determineNextAction(postState);
       console.log(`\n  Next: ${nextAction.reason}`);
-      if (nextAction.command) {
-        console.log(`  ${formatNextActionCommand(nextAction, workspacePath)}`);
+      const nextCmd = formatNextActionCommand(nextAction, workspacePath);
+      if (nextCmd) {
+        console.log(`  ${nextCmd}`);
       }
     }
   } else {
@@ -633,8 +635,9 @@ async function handleInspectArtifact(runId: string, component: string, workspace
 
     const nextAction = determineNextAction(postState);
     console.log(`\n  Next: ${nextAction.reason}`);
-    if (nextAction.command) {
-      console.log(`  ${formatNextActionCommand(nextAction, workspacePath)}`);
+    const nextCmd = formatNextActionCommand(nextAction, workspacePath);
+    if (nextCmd) {
+      console.log(`  ${nextCmd}`);
     }
   } else {
     console.log('\n✅ Artifact inspection complete.');

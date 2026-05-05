@@ -710,11 +710,11 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
     state.runStatus = 'evidence_captured';
     state.updatedAt = new Date().toISOString();
     console.log(`\n  All ${modifyComponents.length} component(s) captured. Run status: evidence_captured`);
-    console.log(`  Next: sea verify ${runId} -w <workspace>`);
+    console.log(`  Next: sea verify ${runId} -w ${workspacePath || '.sea/workspace.json'}`);
   } else {
     console.log(`\n  ${uncaptured.length} component(s) still need evidence capture`);
     for (const [name] of uncaptured) {
-      console.log(`    - sea after-execution ${runId} -c ${name} -w <workspace>`);
+      console.log(`    - sea after-execution ${runId} -c ${name} -w ${workspacePath || '.sea/workspace.json'}`);
     }
   }
 

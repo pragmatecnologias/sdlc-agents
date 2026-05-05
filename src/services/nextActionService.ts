@@ -22,7 +22,6 @@ export interface NextAction {
   runId: string;
   reason: string;
   component?: string;
-  command?: string;
   details?: string[];
   canRunInteractively: boolean;
 }
@@ -69,7 +68,6 @@ export function determineNextAction(state: WorkspaceState): NextAction {
         type: 'RUN_VERIFICATION',
         runId,
         reason: 'Verification is currently running',
-        command: `sea verify ${runId} -w <workspace>`,
         canRunInteractively: true,
       };
 
@@ -78,7 +76,6 @@ export function determineNextAction(state: WorkspaceState): NextAction {
         type: 'RESUME',
         runId,
         reason: 'Run is in review phase, ready to continue',
-        command: `sea resume ${runId} -w <workspace>`,
         canRunInteractively: true,
       };
 
@@ -90,7 +87,6 @@ export function determineNextAction(state: WorkspaceState): NextAction {
         type: 'SHOW_REPORT',
         runId,
         reason: `Run has ended with status: ${runStatus}`,
-        command: `sea report ${runId} -w <workspace>`,
         canRunInteractively: true,
       };
 
@@ -102,7 +98,6 @@ export function determineNextAction(state: WorkspaceState): NextAction {
           type: 'SHOW_REPORT',
           runId,
           reason: 'Run has partial results available',
-          command: `sea report ${runId} -w <workspace>`,
           canRunInteractively: true,
         };
       }
@@ -146,7 +141,6 @@ function determineAwaitingManualExecutionAction(state: WorkspaceState): NextActi
       runId,
       reason: `${component} has completed execution but no evidence captured`,
       component,
-      command: `sea after-execution ${runId} -c ${component} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -158,7 +152,6 @@ function determineAwaitingManualExecutionAction(state: WorkspaceState): NextActi
       runId,
       reason: `${component} is waiting for manual execution`,
       component,
-      command: `sea request ${runId} -c ${component} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -197,7 +190,6 @@ function determineEvidenceCapturedAction(state: WorkspaceState): NextAction {
       type: 'RUN_VERIFICATION',
       runId,
       reason: 'Evidence captured but verification not yet run',
-      command: `sea verify ${runId} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -215,7 +207,6 @@ function determineVerificationCompleteAction(state: WorkspaceState): NextAction 
       type: 'SHOW_REPORT',
       runId,
       reason: 'Final decision has been made',
-      command: `sea report ${runId} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -246,7 +237,6 @@ function determineVerificationCompleteAction(state: WorkspaceState): NextAction 
       runId,
       reason: `Artifact inspection needed for ${component}`,
       component,
-      command: `sea inspect-artifact ${runId} -c ${component} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -257,7 +247,6 @@ function determineVerificationCompleteAction(state: WorkspaceState): NextAction 
       type: 'RESUME',
       runId,
       reason: 'All evidence captured, ready for final review',
-      command: `sea resume ${runId} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -266,7 +255,6 @@ function determineVerificationCompleteAction(state: WorkspaceState): NextAction 
     type: 'SHOW_REPORT',
     runId,
     reason: 'Run is ready for final report',
-    command: `sea report ${runId} -w <workspace>`,
     canRunInteractively: true,
   };
 }
@@ -295,7 +283,6 @@ export function getNextActionForComponent(state: WorkspaceState, componentName: 
         runId,
         reason: `${componentName} execution complete, capture evidence`,
         component: componentName,
-        command: `sea after-execution ${runId} -c ${componentName} -w <workspace>`,
         canRunInteractively: true,
       };
     }
@@ -304,7 +291,6 @@ export function getNextActionForComponent(state: WorkspaceState, componentName: 
       runId,
       reason: `${componentName} needs execution request`,
       component: componentName,
-      command: `sea request ${runId} -c ${componentName} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -315,7 +301,6 @@ export function getNextActionForComponent(state: WorkspaceState, componentName: 
       type: 'RUN_VERIFICATION',
       runId,
       reason: `${componentName} has changes, needs verification`,
-      command: `sea verify ${runId} -w <workspace>`,
       canRunInteractively: true,
     };
   }
@@ -329,29 +314,68 @@ export function getNextActionForComponent(state: WorkspaceState, componentName: 
 }
 
 /**
- * Format a NextAction command string by replacing the <workspace> placeholder.
+ * Format a NextAction command string from action type and workspace path.
+ * Never stores partial command strings — always computes fresh.
  */
-export function formatNextActionCommand(action: NextAction, workspacePath: string): string | undefined {
-  if (!action.command) return undefined;
-  return action.command.replace('<workspace>', workspacePath);
+export function formatNextActionCommand(action: NextAction, workspacePath: string): string {
+  const w = ` -w ${workspacePath}`;
+  switch (action.type) {
+    case 'OPEN_EXECUTION_REQUEST':
+      return `sea request ${action.runId} -c ${action.component}${w}`;
+    case 'CAPTURE_EVIDENCE':
+      return `sea after-execution ${action.runId} -c ${action.component}${w}`;
+    case 'RUN_VERIFICATION':
+      return `sea verify ${action.runId}${w}`;
+    case 'INSPECT_ARTIFACT':
+      return `sea inspect-artifact ${action.runId} -c ${action.component}${w}`;
+    case 'SHOW_REPORT':
+      return `sea report ${action.runId}${w}`;
+    case 'RESUME':
+      return `sea resume ${action.runId}${w}`;
+    case 'FIX_BLOCKER':
+      return `sea resume ${action.runId}${w}`;
+    case 'NONE':
+      return '';
+    default:
+      return `sea resume ${action.runId}${w}`;
+  }
 }
 
 /**
- * Build a summary of missing evidence for the run
+ * Build a summary of missing evidence for the run.
+ * Evidence requirements depend on the component's changeRole.
  */
 export function getMissingEvidence(state: WorkspaceState): string[] {
   const missing: string[] = [];
   const { componentStates } = state;
 
   for (const [name, cs] of Object.entries(componentStates)) {
-    if (cs.changeRole === 'no_change' || cs.changeRole === 'unknown') {
-      continue;
-    }
-
-    if (!cs.diffPath && cs.changedFiles.length === 0) {
-      missing.push(`${name}: no diff captured`);
-    } else if (!cs.commandResults || cs.commandResults.length === 0) {
-      missing.push(`${name}: no verification commands run`);
+    switch (cs.changeRole) {
+      case 'no_change':
+      case 'unknown':
+        break; // nothing expected
+      case 'modify':
+        if (!cs.diffPath && cs.changedFiles.length === 0) {
+          missing.push(`${name}: no diff captured`);
+        }
+        if (!cs.commandResults || cs.commandResults.length === 0) {
+          missing.push(`${name}: no verification commands run`);
+        }
+        break;
+      case 'verify_only':
+      case 'package_only':
+        if (!cs.commandResults || cs.commandResults.length === 0) {
+          missing.push(`${name}: no verification commands run`);
+        }
+        break;
+      case 'artifact_verify':
+        if (!cs.artifactInspection) {
+          missing.push(`${name}: no artifact inspection`);
+        }
+        break;
+      case 'blocked':
+        missing.push(`${name}: blocked`);
+        break;
     }
   }
 

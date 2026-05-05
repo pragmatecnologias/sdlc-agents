@@ -10,7 +10,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import { determineNextAction, getMissingEvidence } from '../../src/services/nextActionService.js';
+import { determineNextAction, getMissingEvidence, formatNextActionCommand } from '../../src/services/nextActionService.js';
 import { WorkspaceState } from '../../src/state/workspaceState.js';
 
 const CLI = path.resolve(__dirname, '../../dist/index.js');
@@ -200,5 +200,138 @@ describe('sea next command', () => {
     expect(parsed.runId).toBe(runId);
     expect(parsed.reason).toBeDefined();
     expect(parsed.canRunInteractively).toBeDefined();
+  });
+});
+
+describe('formatNextActionCommand (unit)', () => {
+  it('produces correct command for each action type with component', () => {
+    const base = { runId: 'run-1', reason: 'test', canRunInteractively: true };
+
+    expect(formatNextActionCommand({ ...base, type: 'OPEN_EXECUTION_REQUEST', component: 'ui' }, '/ws'))
+      .toBe('sea request run-1 -c ui -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'CAPTURE_EVIDENCE', component: 'ui' }, '/ws'))
+      .toBe('sea after-execution run-1 -c ui -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'INSPECT_ARTIFACT', component: 'war' }, '/ws'))
+      .toBe('sea inspect-artifact run-1 -c war -w /ws');
+  });
+
+  it('produces correct command for types without component', () => {
+    const base = { runId: 'run-2', reason: 'test', canRunInteractively: true };
+
+    expect(formatNextActionCommand({ ...base, type: 'RUN_VERIFICATION' }, '/ws'))
+      .toBe('sea verify run-2 -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'SHOW_REPORT' }, '/ws'))
+      .toBe('sea report run-2 -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'RESUME' }, '/ws'))
+      .toBe('sea resume run-2 -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'FIX_BLOCKER' }, '/ws'))
+      .toBe('sea resume run-2 -w /ws');
+
+    expect(formatNextActionCommand({ ...base, type: 'NONE' }, '/ws'))
+      .toBe('');
+  });
+
+  it('never contains placeholder strings', () => {
+    const types = ['OPEN_EXECUTION_REQUEST', 'CAPTURE_EVIDENCE', 'RUN_VERIFICATION', 'INSPECT_ARTIFACT', 'SHOW_REPORT', 'RESUME', 'FIX_BLOCKER', 'NONE'] as const;
+    for (const type of types) {
+      const action = { type, runId: 'run-x', reason: 'test', canRunInteractively: false };
+      const result = formatNextActionCommand(action, '/some/path');
+      expect(result).not.toContain('<workspace>');
+      expect(result).not.toContain('{{workspace');
+    }
+  });
+});
+
+describe('getMissingEvidence (changeRole-aware)', () => {
+  function makeState(componentStates: Record<string, unknown>): WorkspaceState {
+    return {
+      runId: 'test-run',
+      runStatus: 'evidence_captured',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      userRequest: 'test',
+      workspace: { workspaceName: 'test', defaultExecutor: 'manual', approvalPolicy: { required: false }, qualityGates: {}, components: [] },
+      componentStates: componentStates as WorkspaceState['componentStates'],
+    } as WorkspaceState;
+  }
+
+  it('modify with no diff reports missing diff', () => {
+    const state = makeState({
+      comp1: { changeRole: 'modify', diffPath: null, changedFiles: [], commandResults: [] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: no diff captured');
+  });
+
+  it('modify with no commands reports missing commands', () => {
+    const state = makeState({
+      comp1: { changeRole: 'modify', diffPath: '/diff.patch', changedFiles: ['a.ts'], commandResults: [] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: no verification commands run');
+  });
+
+  it('verify_only with no commands reports missing commands (not diff)', () => {
+    const state = makeState({
+      comp1: { changeRole: 'verify_only', diffPath: null, changedFiles: [], commandResults: [] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: no verification commands run');
+    expect(missing).not.toContain('comp1: no diff captured');
+  });
+
+  it('verify_only with commands is not reported', () => {
+    const state = makeState({
+      comp1: { changeRole: 'verify_only', diffPath: null, changedFiles: [], commandResults: [{ commandName: 'test' }] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toHaveLength(0);
+  });
+
+  it('package_only with no commands reports missing commands', () => {
+    const state = makeState({
+      comp1: { changeRole: 'package_only', diffPath: null, changedFiles: [], commandResults: [] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: no verification commands run');
+    expect(missing).not.toContain('comp1: no diff captured');
+  });
+
+  it('artifact_verify with no inspection reports missing inspection', () => {
+    const state = makeState({
+      comp1: { changeRole: 'artifact_verify', diffPath: null, changedFiles: [], commandResults: [], artifactInspection: null },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: no artifact inspection');
+    expect(missing).not.toContain('comp1: no diff captured');
+  });
+
+  it('artifact_verify with inspection but no diff does not report diff', () => {
+    const state = makeState({
+      comp1: { changeRole: 'artifact_verify', diffPath: null, changedFiles: [], commandResults: [], artifactInspection: { valid: true, artifactType: 'war' } },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toHaveLength(0);
+  });
+
+  it('no_change produces empty missing list', () => {
+    const state = makeState({
+      comp1: { changeRole: 'no_change', diffPath: null, changedFiles: [], commandResults: [] },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toHaveLength(0);
+  });
+
+  it('blocked is reported', () => {
+    const state = makeState({
+      comp1: { changeRole: 'blocked' },
+    });
+    const missing = getMissingEvidence(state);
+    expect(missing).toContain('comp1: blocked');
   });
 });
