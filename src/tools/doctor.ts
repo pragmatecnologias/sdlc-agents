@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { WorkspaceConfig } from '../state/workspaceState.js';
@@ -382,7 +383,7 @@ function findCommand(cmd: string, cwd: string): string | null {
   // Handle absolute paths
   if (cmd.startsWith('/') || cmd.startsWith('.')) {
     try {
-      fs.access(path.resolve(cwd, cmd));
+      fsSync.accessSync(path.resolve(cwd, cmd));
       return cmd;
     } catch {
       return null;
@@ -394,7 +395,7 @@ function findCommand(cmd: string, cwd: string): string | null {
   for (const dir of pathEnv.split(':')) {
     try {
       const fullPath = path.join(dir, cmd);
-      fs.access(fullPath);
+      fsSync.accessSync(fullPath);
       return fullPath;
     } catch {
       // Not found in this dir
