@@ -16,7 +16,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { formatNextActionCommand, determineNextAction } from '../../src/services/nextActionService.js';
+import { getComponentNextHint, renderStatusJson, renderReportJson, buildStatusDisplay } from '../../src/ui/renderers.js';
+import { getAvailableActions } from '../../src/ui/interactive.js';
 import { createTempWorkspace, cleanupTempWorkspace } from '../setup.js';
+import type { StatusDisplay, ComponentStatusDisplay, BranchSafetyDisplay } from '../../src/ui/renderers.js';
+import type { WorkspaceState } from '../../src/state/workspaceState.js';
+import type { NextAction } from '../../src/services/nextActionService.js';
 
 const CLI = path.resolve(__dirname, '../../dist/index.js');
 
@@ -357,5 +362,476 @@ describe('report next action accuracy', () => {
       expect(parsed.nextAction.command).not.toContain('<workspace>');
       expect(parsed.nextAction.command).toContain(workspacePath);
     }
+  });
+});
+
+// ============================================================================
+// getComponentNextHint unit tests
+// ============================================================================
+
+describe('getComponentNextHint', () => {
+  it('returns skip for no_change role', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'no_change' })).toBe('skip');
+  });
+
+  it('returns skip for unknown role', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'unknown' })).toBe('skip');
+  });
+
+  it('returns await when no diff and no changed files', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'modify', diffPath: null, changedFiles: [] })).toBe('await');
+  });
+
+  it('returns await when no diff and changedFiles undefined', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'modify', diffPath: null })).toBe('await');
+  });
+
+  it('returns verify when diff exists but no command results', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'modify', diffPath: 'diff.patch', changedFiles: ['a.ts'], commandResults: [] })).toBe('verify');
+  });
+
+  it('returns verify when commandResults is undefined', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'modify', diffPath: 'diff.patch', changedFiles: ['a.ts'] })).toBe('verify');
+  });
+
+  it('returns done when diff and command results exist', () => {
+    expect(getComponentNextHint('ui', { changeRole: 'modify', diffPath: 'diff.patch', changedFiles: ['a.ts'], commandResults: [{ status: 'passed' }] })).toBe('done');
+  });
+
+  it('returns await for verify_only with no commands', () => {
+    expect(getComponentNextHint('api', { changeRole: 'verify_only', diffPath: null, changedFiles: [] })).toBe('await');
+  });
+});
+
+// ============================================================================
+// getAvailableActions unit tests
+// ============================================================================
+
+describe('getAvailableActions', () => {
+  const baseState = {
+    runId: 'run-test',
+    createdAt: '',
+    updatedAt: '',
+    userRequest: '',
+    baseDir: '',
+    workspace: { components: [] },
+    componentStates: {},
+    runStatus: 'test',
+  } as unknown as WorkspaceState;
+
+  it('returns request action for OPEN_EXECUTION_REQUEST', () => {
+    const action: NextAction = { type: 'OPEN_EXECUTION_REQUEST', runId: 'r1', reason: '', component: 'ui', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'request:ui')).toBe(true);
+  });
+
+  it('returns evidence action for CAPTURE_EVIDENCE', () => {
+    const action: NextAction = { type: 'CAPTURE_EVIDENCE', runId: 'r1', reason: '', component: 'backend', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'evidence:backend')).toBe(true);
+  });
+
+  it('returns verify action for RUN_VERIFICATION', () => {
+    const action: NextAction = { type: 'RUN_VERIFICATION', runId: 'r1', reason: '', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'verify')).toBe(true);
+  });
+
+  it('returns artifact action for INSPECT_ARTIFACT', () => {
+    const action: NextAction = { type: 'INSPECT_ARTIFACT', runId: 'r1', reason: '', component: 'war-builder', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'artifact:war-builder')).toBe(true);
+  });
+
+  it('returns resume action for RESUME', () => {
+    const action: NextAction = { type: 'RESUME', runId: 'r1', reason: '', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'resume')).toBe(true);
+  });
+
+  it('returns report action for SHOW_REPORT', () => {
+    const action: NextAction = { type: 'SHOW_REPORT', runId: 'r1', reason: '', canRunInteractively: true };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'report')).toBe(true);
+  });
+
+  it('returns blockers action for FIX_BLOCKER', () => {
+    const action: NextAction = { type: 'FIX_BLOCKER', runId: 'r1', reason: '', canRunInteractively: false };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'blockers')).toBe(true);
+  });
+
+  it('always includes back action', () => {
+    const action: NextAction = { type: 'NONE', runId: 'r1', reason: '', canRunInteractively: false };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'back')).toBe(true);
+  });
+
+  it('always includes full report action', () => {
+    const action: NextAction = { type: 'NONE', runId: 'r1', reason: '', canRunInteractively: false };
+    const actions = getAvailableActions(baseState, action);
+    expect(actions.some(a => a.value === 'report')).toBe(true);
+  });
+});
+
+// ============================================================================
+// renderStatusJson unit tests
+// ============================================================================
+
+describe('renderStatusJson', () => {
+  function makeDisplay(overrides?: Partial<StatusDisplay>): StatusDisplay {
+    return {
+      runId: 'run-json',
+      runStatus: 'awaiting_manual_execution',
+      userRequest: 'test request',
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-02',
+      currentPhase: 'execution',
+      components: [],
+      missingEvidence: [],
+      blockers: [],
+      branchSafety: [],
+      nextAction: {
+        type: 'OPEN_EXECUTION_REQUEST',
+        runId: 'run-json',
+        reason: 'manual execution required',
+        component: 'ui',
+        canRunInteractively: true,
+      },
+      ...overrides,
+    };
+  }
+
+  it('produces valid JSON with all required fields', () => {
+    const result = renderStatusJson(makeDisplay(), '/ws/.sea/workspace.json');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.runId).toBe('run-json');
+    expect(parsed.runStatus).toBe('awaiting_manual_execution');
+    expect(parsed.workspacePath).toBe('/ws/.sea/workspace.json');
+    expect(parsed.components).toBeInstanceOf(Array);
+    expect(parsed.missingEvidence).toBeInstanceOf(Array);
+    expect(parsed.blockers).toBeInstanceOf(Array);
+    expect(parsed.branchSafety).toBeInstanceOf(Array);
+    expect(parsed.nextAction).toBeDefined();
+  });
+
+  it('includes computed command with workspace path', () => {
+    const result = renderStatusJson(makeDisplay(), '/ws/.sea/workspace.json');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.nextAction.command).toBeDefined();
+    expect(parsed.nextAction.command).toContain('/ws/.sea/workspace.json');
+    expect(parsed.nextAction.command).not.toContain('<workspace>');
+  });
+
+  it('maps component fields correctly', () => {
+    const display = makeDisplay({
+      components: [{
+        name: 'backend',
+        role: 'source',
+        changeRole: 'modify',
+        decision: 'pending',
+        executorStatus: 'manual_required',
+        changedFiles: 2,
+        diffPath: 'components/backend/diff.patch',
+        commandResultsCount: 3,
+        artifactInspectionStatus: 'passed',
+        nextActionHint: 'verify',
+      }],
+    });
+
+    const result = renderStatusJson(display, '/ws');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.components).toHaveLength(1);
+    expect(parsed.components[0].name).toBe('backend');
+    expect(parsed.components[0].changeRole).toBe('modify');
+    expect(parsed.components[0].changedFiles).toBe(2);
+    expect(parsed.components[0].commandResultsCount).toBe(3);
+    expect(parsed.components[0].artifactInspectionStatus).toBe('passed');
+  });
+
+  it('maps branch safety fields correctly', () => {
+    const display = makeDisplay({
+      branchSafety: [{
+        componentName: 'ui',
+        branchBefore: 'main',
+        headBeforeShort: 'abc12345',
+        dirtyBefore: false,
+        branchCreated: 'sea/run-123/ui',
+      }],
+    });
+
+    const result = renderStatusJson(display, '/ws');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.branchSafety).toHaveLength(1);
+    expect(parsed.branchSafety[0].componentName).toBe('ui');
+    expect(parsed.branchSafety[0].branchBefore).toBe('main');
+    expect(parsed.branchSafety[0].headBefore).toBe('abc12345');
+  });
+});
+
+// ============================================================================
+// renderReportJson unit tests
+// ============================================================================
+
+describe('renderReportJson', () => {
+  function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
+    return {
+      runId: 'run-report',
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-02',
+      userRequest: 'test report',
+      baseDir: '.sea',
+      workspace: {
+        workspaceName: 'test',
+        projectProfile: 'SINGLE_REPO_FRONTEND',
+        defaultExecutor: 'manual',
+        components: [],
+        approvalPolicy: {},
+        qualityGates: {},
+      },
+      projectProfile: null,
+      memoryContext: null,
+      requirement: null,
+      workspaceDiscovery: null,
+      componentMap: null,
+      impactAnalysis: null,
+      architecturePlan: null,
+      implementationPlan: null,
+      approvals: [],
+      componentStates: {},
+      executionGroups: [],
+      verification: null,
+      artifactInspections: null,
+      securityReview: null,
+      performanceReview: null,
+      brutalRealityCheck: null,
+      finalDecision: null,
+      errors: [],
+      runStatus: 'completed',
+      currentPhase: 'final_decision',
+      ...overrides,
+    } as unknown as WorkspaceState;
+  }
+
+  it('produces valid JSON with all required fields', async () => {
+    const state = makeState({
+      componentStates: {
+        app: {
+          componentName: 'app',
+          changeRole: 'modify',
+          componentDecision: 'approved',
+          executorResult: { status: 'completed' },
+          changedFiles: ['src/index.ts'],
+          diffPath: 'components/app/diff.patch',
+          commandResults: [{ commandName: 'test', status: 'passed', exitCode: 0, durationMs: 100 }],
+          artifactInspection: null,
+        } as any,
+      },
+    });
+
+    const result = await renderReportJson(state, '/ws/.sea/workspace.json');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.runId).toBe('run-report');
+    expect(parsed.runStatus).toBe('completed');
+    expect(parsed.workspacePath).toBe('/ws/.sea/workspace.json');
+    expect(parsed.components).toBeInstanceOf(Array);
+    expect(parsed.nextAction).toBeDefined();
+    expect(parsed.nextAction.command).toBeDefined();
+  });
+
+  it('nextAction command does not contain placeholder', async () => {
+    const state = makeState();
+    const result = await renderReportJson(state, '/ws');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.nextAction.command).not.toContain('<workspace>');
+    expect(parsed.nextAction.command).not.toContain('{{workspace');
+  });
+
+  it('maps component command results correctly', async () => {
+    const state = makeState({
+      componentStates: {
+        ui: {
+          componentName: 'ui',
+          changeRole: 'modify',
+          componentDecision: 'pending',
+          executorResult: { status: 'completed' },
+          changedFiles: ['src/App.tsx'],
+          diffPath: null,
+          commandResults: [
+            { commandName: 'test', status: 'passed', exitCode: 0, durationMs: 50, stdoutPath: 'stdout.txt', stderrPath: 'stderr.txt' },
+          ],
+          artifactInspection: { artifactType: 'war', valid: true, fileCount: 10, entries: [] },
+        } as any,
+      },
+    });
+
+    const result = await renderReportJson(state, '/ws');
+    const parsed = JSON.parse(result);
+
+    expect(parsed.components[0].commandResults).toHaveLength(1);
+    expect(parsed.components[0].commandResults[0].commandName).toBe('test');
+    expect(parsed.components[0].artifactInspection.valid).toBe(true);
+  });
+});
+
+// ============================================================================
+// buildStatusDisplay unit tests
+// ============================================================================
+
+describe('buildStatusDisplay', () => {
+  function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
+    return {
+      runId: 'run-build',
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-02',
+      userRequest: 'test build status',
+      baseDir: '.sea',
+      workspace: {
+        workspaceName: 'test',
+        projectProfile: 'SINGLE_REPO_FRONTEND',
+        defaultExecutor: 'manual',
+        components: [
+          { name: 'app', path: '.', kind: 'frontend', role: 'source' },
+        ],
+        approvalPolicy: {},
+        qualityGates: {},
+      },
+      projectProfile: null,
+      memoryContext: null,
+      requirement: null,
+      workspaceDiscovery: null,
+      componentMap: null,
+      impactAnalysis: null,
+      architecturePlan: null,
+      implementationPlan: null,
+      approvals: [],
+      componentStates: {
+        app: {
+          componentName: 'app',
+          changeRole: 'modify',
+          componentDecision: 'pending',
+          executorResult: { status: 'manual_required' },
+          changedFiles: [],
+          diffPath: null,
+          commandResults: [],
+          artifactInspection: null,
+        } as any,
+      },
+      executionGroups: [],
+      verification: null,
+      artifactInspections: null,
+      securityReview: null,
+      performanceReview: null,
+      brutalRealityCheck: null,
+      finalDecision: null,
+      errors: [],
+      runStatus: 'awaiting_manual_execution',
+      currentPhase: 'execution',
+      ...overrides,
+    } as unknown as WorkspaceState;
+  }
+
+  it('returns correct top-level fields', async () => {
+    const state = makeState();
+    const display = await buildStatusDisplay(state, '/ws');
+
+    expect(display.runId).toBe('run-build');
+    expect(display.runStatus).toBe('awaiting_manual_execution');
+    expect(display.userRequest).toBe('test build status');
+    expect(display.currentPhase).toBe('execution');
+  });
+
+  it('maps component fields correctly', async () => {
+    const state = makeState();
+    const display = await buildStatusDisplay(state, '/ws');
+
+    expect(display.components).toHaveLength(1);
+    expect(display.components[0].name).toBe('app');
+    expect(display.components[0].changeRole).toBe('modify');
+    expect(display.components[0].decision).toBe('pending');
+    expect(display.components[0].executorStatus).toBe('manual_required');
+  });
+
+  it('sets nextActionHint to await for modify with no diff', async () => {
+    const state = makeState();
+    const display = await buildStatusDisplay(state, '/ws');
+
+    expect(display.components[0].nextActionHint).toBe('await');
+  });
+
+  it('sets nextActionHint to verify when diff exists but no commands', async () => {
+    const state = makeState({
+      componentStates: {
+        app: {
+          componentName: 'app',
+          changeRole: 'modify',
+          componentDecision: 'pending',
+          executorResult: { status: 'completed' },
+          changedFiles: ['src/index.ts'],
+          diffPath: 'diff.patch',
+          commandResults: [],
+          artifactInspection: null,
+        } as any,
+      },
+    });
+
+    const display = await buildStatusDisplay(state, '/ws');
+    expect(display.components[0].nextActionHint).toBe('verify');
+  });
+
+  it('sets nextActionHint to skip for no_change', async () => {
+    const state = makeState({
+      componentStates: {
+        app: {
+          componentName: 'app',
+          changeRole: 'no_change',
+          componentDecision: 'pending',
+          executorResult: null,
+          changedFiles: [],
+          diffPath: null,
+          commandResults: [],
+          artifactInspection: null,
+        } as any,
+      },
+    });
+
+    const display = await buildStatusDisplay(state, '/ws');
+    expect(display.components[0].nextActionHint).toBe('skip');
+  });
+
+  it('populates missingEvidence from state', async () => {
+    const state = makeState({
+      componentStates: {
+        app: {
+          componentName: 'app',
+          changeRole: 'modify',
+          componentDecision: 'pending',
+          executorResult: { status: 'completed' },
+          changedFiles: [],
+          diffPath: null,
+          commandResults: [],
+          artifactInspection: null,
+        } as any,
+      },
+    });
+
+    const display = await buildStatusDisplay(state, '/ws');
+    expect(display.missingEvidence.length).toBeGreaterThan(0);
+    expect(display.missingEvidence.some(e => e.includes('app'))).toBe(true);
+  });
+
+  it('populates nextAction via determineNextAction', async () => {
+    const state = makeState();
+    const display = await buildStatusDisplay(state, '/ws');
+
+    expect(display.nextAction).toBeDefined();
+    expect(display.nextAction.type).toBeDefined();
+    expect(display.nextAction.runId).toBe('run-build');
   });
 });

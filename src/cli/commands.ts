@@ -216,9 +216,10 @@ export function registerCommands(program: Command): void {
     .argument('<runId>', 'Run ID')
     .option('-w, --workspace <path>', 'Path to workspace.json')
     .option('--json', 'Output as JSON')
-    .option('--create', 'Create task branches for all components')
+    .option('--create', 'Create task branches for affected modify components')
+    .option('--all', 'With --create, create branches for every component')
     .action(async (runId, options) => {
-      await handleBranch(runId, options.workspace, options.json, options.create);
+      await handleBranch(runId, options.workspace, options.json, options.create, options.all);
     });
 
   // rollback command
@@ -1242,7 +1243,7 @@ async function handleReport(runId: string, workspacePath?: string, asJson?: bool
     const runPaths = getRunPaths(runId, baseDir);
 
     if (asJson) {
-      console.log(renderReportJson(state, workspacePath || path.join(baseDir, 'workspace.json')));
+      console.log(await renderReportJson(state, workspacePath || path.join(baseDir, 'workspace.json')));
       return;
     }
 
@@ -1525,7 +1526,7 @@ async function handleStatus(runId: string, workspacePath?: string, asJson?: bool
   }
 
   const state = stateResult.state as unknown as WorkspaceState;
-  const display = buildStatusDisplay(state, workspacePath);
+  const display = await buildStatusDisplay(state, workspacePath);
 
   if (asJson) {
     console.log(renderStatusJson(display, workspacePath));
@@ -1578,7 +1579,8 @@ async function handleBranch(
   runId: string,
   workspacePath?: string,
   asJson?: boolean,
-  createBranches?: boolean
+  createBranches?: boolean,
+  allComponents?: boolean
 ): Promise<void> {
   if (!workspacePath) {
     const { findWorkspaceFromCwd } = await import('../services/workspaceService.js');
@@ -1602,11 +1604,17 @@ async function handleBranch(
     }
 
     console.log(`Creating task branches for run ${runId}...`);
+    // Component paths are relative to workspace root
+    const workspaceRoot = resolveWorkspaceRoot(workspacePath);
     const result = await createTaskBranches(
       runId,
-      state.baseDir || baseDir,
+      workspaceRoot,
       state.workspace.components || [],
-      baseDir
+      baseDir,
+      {
+        onlyModifyComponents: !allComponents,
+        componentStates: state.componentStates,
+      }
     );
 
     if (result.failed.length > 0) {

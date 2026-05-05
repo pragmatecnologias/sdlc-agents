@@ -9,6 +9,7 @@ import { NextAction, determineNextAction, getMissingEvidence, formatNextActionCo
 import { RunSummary } from '../services/workspaceService.js';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { WorkspaceValidationResult } from '../tools/workspaceValidator.js';
+import { BranchSafetyResult, loadBranchSafetyState, formatBranchSafetyReport } from '../tools/branchSafety.js';
 
 // ============================================================================
 // Console Renderer
@@ -46,6 +47,14 @@ export function printDivider(): void {
 // Run Board Renderer
 // ============================================================================
 
+export interface BranchSafetyDisplay {
+  componentName: string;
+  branchBefore: string;
+  headBeforeShort: string;
+  dirtyBefore: boolean;
+  branchCreated: string | null;
+}
+
 export interface StatusDisplay {
   runId: string;
   runStatus: string;
@@ -57,6 +66,7 @@ export interface StatusDisplay {
   missingEvidence: string[];
   blockers: string[];
   nextAction: NextAction;
+  branchSafety: BranchSafetyDisplay[];
 }
 
 export interface ComponentStatusDisplay {
@@ -114,6 +124,22 @@ export function renderRunBoard(display: StatusDisplay, workspacePath: string): v
     printList(display.missingEvidence);
   }
 
+  // Branch safety
+  if (display.branchSafety.length > 0) {
+    printDivider();
+    console.log('\nBranch Safety');
+    console.log('  Component        Branch            HEAD       Dirty  Created');
+    console.log('  ' + '─'.repeat(72));
+    for (const bs of display.branchSafety) {
+      const name = bs.componentName.padEnd(16).substring(0, 16);
+      const branch = (bs.branchBefore || '-').padEnd(17).substring(0, 17);
+      const head = bs.headBeforeShort.padEnd(10).substring(0, 10);
+      const dirty = bs.dirtyBefore ? 'YES    ' : 'no     ';
+      const created = bs.branchCreated || '-';
+      console.log(`  ${name} ${branch} ${head} ${dirty} ${created}`);
+    }
+  }
+
   // Blockers
   if (display.blockers.length > 0) {
     printDivider();
@@ -157,6 +183,13 @@ export function renderStatusJson(display: StatusDisplay, workspacePath: string):
       diffPath: c.diffPath,
       commandResultsCount: c.commandResultsCount,
       artifactInspectionStatus: c.artifactInspectionStatus,
+    })),
+    branchSafety: display.branchSafety.map(bs => ({
+      componentName: bs.componentName,
+      branchBefore: bs.branchBefore,
+      headBefore: bs.headBeforeShort,
+      dirtyBefore: bs.dirtyBefore,
+      branchCreated: bs.branchCreated,
     })),
     missingEvidence: display.missingEvidence,
     blockers: display.blockers,
@@ -315,7 +348,7 @@ export function renderValidationJson(result: WorkspaceValidationResult): string 
 // Report Renderer
 // ============================================================================
 
-export function renderReport(state: WorkspaceState, workspacePath: string): void {
+export async function renderReport(state: WorkspaceState, workspacePath: string): Promise<void> {
   printBanner(`SEA Run Report: ${state.runId}`);
 
   // Run summary
@@ -395,6 +428,31 @@ export function renderReport(state: WorkspaceState, workspacePath: string): void
     console.log('  No evidence captured yet.');
   }
 
+  // Branch safety
+  try {
+    const baseDir = state.baseDir || '.sea';
+    const branchSafety = await loadBranchSafetyState(state.runId, baseDir);
+    if (branchSafety && 'components' in branchSafety) {
+      printDivider();
+      console.log('\nBranch Safety');
+      const components = (branchSafety as BranchSafetyResult).components;
+      if (components.length > 0) {
+        console.log('  Component        Branch            HEAD       Dirty  Created');
+        console.log('  ' + '─'.repeat(72));
+        for (const comp of components) {
+          const name = comp.componentName.padEnd(16).substring(0, 16);
+          const branch = (comp.branchBefore || '-').padEnd(17).substring(0, 17);
+          const head = comp.headBefore.substring(0, 8).padEnd(10);
+          const dirty = comp.isDirty ? 'YES    ' : 'no     ';
+          const created = comp.branchCreated || '-';
+          console.log(`  ${name} ${branch} ${head} ${dirty} ${created}`);
+        }
+      }
+    }
+  } catch {
+    // Branch safety data not available
+  }
+
   // Final decision
   if (state.finalDecision) {
     printDivider();
@@ -426,7 +484,7 @@ export function renderReport(state: WorkspaceState, workspacePath: string): void
   console.log('');
 }
 
-export function renderReportJson(state: WorkspaceState, workspacePath: string): string {
+export async function renderReportJson(state: WorkspaceState, workspacePath: string): Promise<string> {
   const components = Object.entries(state.componentStates).map(([name, cs]) => ({
     name,
     role: cs.role,
@@ -451,6 +509,24 @@ export function renderReportJson(state: WorkspaceState, workspacePath: string): 
     } : null,
   }));
 
+  // Load branch safety
+  let branchSafetyData: BranchSafetyDisplay[] = [];
+  try {
+    const baseDir = state.baseDir || '.sea';
+    const branchSafety = await loadBranchSafetyState(state.runId, baseDir);
+    if (branchSafety && 'components' in branchSafety) {
+      branchSafetyData = (branchSafety as BranchSafetyResult).components.map(comp => ({
+        componentName: comp.componentName,
+        branchBefore: comp.branchBefore,
+        headBeforeShort: comp.headBefore.substring(0, 8),
+        dirtyBefore: comp.isDirty,
+        branchCreated: comp.branchCreated,
+      }));
+    }
+  } catch {
+    // Branch safety not available
+  }
+
   return JSON.stringify({
     runId: state.runId,
     runStatus: state.runStatus,
@@ -459,6 +535,7 @@ export function renderReportJson(state: WorkspaceState, workspacePath: string): 
     updatedAt: state.updatedAt,
     workspacePath,
     components,
+    branchSafety: branchSafetyData,
     finalDecision: state.finalDecision,
     nextAction: (() => {
       const na = determineNextAction(state);
@@ -489,7 +566,7 @@ export function renderExecutionRequest(requestPath: string, componentName: strin
 // Run Board Builder (shared between CLI status command and interactive UI)
 // ============================================================================
 
-function getComponentNextHint(name: string, cs: Record<string, unknown>): string {
+export function getComponentNextHint(name: string, cs: Record<string, unknown>): string {
   if (cs.changeRole === 'no_change' || cs.changeRole === 'unknown') {
     return 'skip';
   }
@@ -513,7 +590,7 @@ function getComponentNextHint(name: string, cs: Record<string, unknown>): string
  * Build a StatusDisplay from WorkspaceState.
  * Used by both CLI status command and interactive UI.
  */
-export function buildStatusDisplay(state: WorkspaceState, workspacePath: string): StatusDisplay {
+export async function buildStatusDisplay(state: WorkspaceState, workspacePath: string): Promise<StatusDisplay> {
   const components: ComponentStatusDisplay[] = [];
 
   for (const [name, cs] of Object.entries(state.componentStates)) {
@@ -539,6 +616,24 @@ export function buildStatusDisplay(state: WorkspaceState, workspacePath: string)
   const nextAction = determineNextAction(state);
   const missingEvidence = getMissingEvidence(state);
 
+  // Load branch safety data
+  let branchSafety: BranchSafetyDisplay[] = [];
+  try {
+    const baseDir = state.baseDir || '.sea';
+    const bsResult = await loadBranchSafetyState(state.runId, baseDir);
+    if (bsResult && 'components' in bsResult) {
+      branchSafety = (bsResult as BranchSafetyResult).components.map(comp => ({
+        componentName: comp.componentName,
+        branchBefore: comp.branchBefore,
+        headBeforeShort: comp.headBefore.substring(0, 8),
+        dirtyBefore: comp.isDirty,
+        branchCreated: comp.branchCreated,
+      }));
+    }
+  } catch {
+    // Branch safety not available
+  }
+
   return {
     runId: state.runId,
     runStatus: state.runStatus,
@@ -550,5 +645,6 @@ export function buildStatusDisplay(state: WorkspaceState, workspacePath: string)
     missingEvidence,
     blockers: (state.errors || []).map(e => (e as { error?: string }).error || String(e)),
     nextAction,
+    branchSafety,
   };
 }

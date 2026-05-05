@@ -93,14 +93,28 @@ sea memory "authentication" -w .sea/workspace.json
 
 | Command | Description |
 |---------|-------------|
+| `sea` | Open interactive control panel (same as `sea interactive`) |
+| `sea interactive` | Open guided interactive control panel |
+| `sea ui` | Open guided interactive control panel (alias) |
 | `sea init --workspace <name>` | Initialize a workspace with `.sea/workspace.json` |
+| `sea validate-workspace -w <path>` | Validate workspace configuration |
+| `sea doctor -w <path>` | Comprehensive workspace health check |
 | `sea plan "<request>" -w <path>` | Run planning phases only (1-8) |
 | `sea run "<request>" -w <path>` | Run full workflow |
 | `sea request <runId> -c <component> -w <path>` | Show execution request for a component |
 | `sea after-execution <runId> -c <component> -w <path>` | Capture git evidence after manual execution |
 | `sea verify <runId> -w <path>` | Run verification commands |
 | `sea resume <runId> -w <path>` | Resume from latest checkpoint |
+| `sea status <runId> -w <path>` | Show run status with component matrix |
+| `sea next <runId> -w <path>` | Show next recommended action |
 | `sea report <runId> -w <path>` | Show final report |
+| `sea branch <runId> -w <path>` | Show branch safety state |
+| `sea branch <runId> --create -w <path>` | Create task branches for modify components |
+| `sea branch <runId> --create --all -w <path>` | Create task branches for all components |
+| `sea rollback <runId> -w <path>` | Preview rollback (dry run) |
+| `sea rollback <runId> --yes -w <path>` | Apply rollback |
+| `sea rollback <runId> -c <component> --yes -w <path>` | Rollback specific component |
+| `sea inspect-artifact <runId> -c <component> -w <path>` | Inspect component artifact |
 | `sea memory [query] -w <path>` | Search or show engineering memory |
 
 ## Executors

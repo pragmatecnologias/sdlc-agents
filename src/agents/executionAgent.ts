@@ -324,23 +324,24 @@ function buildExecutionRequestMarkdown(
     lines.push('');
   }
 
-  // Add component analysis section if available
+  // Add relevant context section if available
   if (analysis) {
-    lines.push('## Component Analysis');
+    lines.push('## Relevant Context');
+    lines.push('----------------');
     lines.push('');
     if (analysis.framework) {
-      lines.push(`- **Framework:** ${analysis.framework}`);
+      lines.push(`**Framework:** ${analysis.framework}`);
     }
     if (analysis.buildSystem) {
-      lines.push(`- **Build System:** ${analysis.buildSystem}`);
+      lines.push(`**Build System:** ${analysis.buildSystem}`);
     }
     if (analysis.testFramework) {
-      lines.push(`- **Test Framework:** ${analysis.testFramework}`);
+      lines.push(`**Test Framework:** ${analysis.testFramework}`);
     }
     lines.push('');
 
     if (analysis.keyFiles.length > 0) {
-      lines.push('### Key Source Files');
+      lines.push('### Likely Files');
       for (const f of analysis.keyFiles) {
         lines.push(`- \`${f}\``);
       }
@@ -348,15 +349,23 @@ function buildExecutionRequestMarkdown(
     }
 
     if (analysis.testFiles.length > 0) {
-      lines.push('### Test Files');
+      lines.push('### Tests to Consider');
       for (const f of analysis.testFiles) {
         lines.push(`- \`${f}\``);
       }
       lines.push('');
     }
 
+    if (analysis.configFiles.length > 0) {
+      lines.push('### Build/Config Files');
+      for (const f of analysis.configFiles) {
+        lines.push(`- \`${f}\``);
+      }
+      lines.push('');
+    }
+
     if (analysis.apiFiles.length > 0) {
-      lines.push('### API / Route Files');
+      lines.push('### API/Client/Model Files');
       for (const f of analysis.apiFiles) {
         lines.push(`- \`${f}\``);
       }

@@ -366,12 +366,21 @@ function checkCommands(compName: string, compPath: string, comp: ComponentConfig
     // Try to locate the binary being called
     const firstWord = cmdValue.trim().split(/\s+/)[0];
     const resolved = findCommand(firstWord, compPath);
-    if (!resolved) {
+    if (resolved) {
+      checks.push({
+        status: 'PASS',
+        component: compName,
+        check: `command-binary-found`,
+        problem: '',
+        whyItMatters: `Binary '${firstWord}' is available. Doctor checks binary availability only — the actual command is not executed during doctor.`,
+        howToFix: '',
+      });
+    } else {
       checks.push({
         status: 'WARN',
         component: compName,
         check: `command-not-found`,
-        problem: `Command binary '${firstWord}' for '${cmdName}' not found in PATH`,
+        problem: `Command binary '${firstWord}' for '${cmdName}' not found in PATH. Doctor checks binary availability only — the actual command is not executed during doctor.`,
         whyItMatters: 'Verification will fail because the command cannot be executed',
         howToFix: `Ensure '${firstWord}' is installed and in PATH, or correct the command in workspace.json for component '${compName}'`,
       });

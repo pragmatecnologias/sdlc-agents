@@ -106,8 +106,11 @@ export async function captureBranchSafety(
 }
 
 /**
- * Create task branches for all components.
+ * Create task branches for components.
  * Branch name format: sea/<run-slug>
+ *
+ * By default, only creates branches for components with changeRole === 'modify'.
+ * Pass onlyAllComponents: true to create branches for every component.
  *
  * Returns which branches were created and which failed.
  */
@@ -115,8 +118,11 @@ export async function createTaskBranches(
   runId: string,
   workspaceRoot: string,
   components: ComponentConfig[],
-  baseDir: string = '.sea'
+  baseDir: string = '.sea',
+  options?: { onlyModifyComponents?: boolean; componentStates?: Record<string, { changeRole?: string }> }
 ): Promise<CreateBranchesResult> {
+  const onlyModify = options?.onlyModifyComponents !== false; // default true
+  const componentStates = options?.componentStates || {};
   // Derive a slug from runId (strip timestamp if run-${timestamp})
   const runSlug = runId.replace(/^run-\d+_/, '').replace(/[^a-zA-Z0-9-_]/g, '-');
   const branchName = `sea/${runSlug}`;
@@ -126,6 +132,22 @@ export async function createTaskBranches(
   const componentBranchStates: ComponentBranchState[] = [];
 
   for (const comp of components) {
+    // Skip non-modify components when onlyModify is true
+    if (onlyModify) {
+      const cs = componentStates[comp.name];
+      if (cs && cs.changeRole && cs.changeRole !== 'modify') {
+        componentBranchStates.push({
+          componentName: comp.name,
+          componentPath: path.isAbsolute(comp.path) ? comp.path : path.resolve(workspaceRoot, comp.path),
+          branchBefore: '',
+          headBefore: '',
+          isDirty: false,
+          branchCreated: null,
+        });
+        continue;
+      }
+    }
+
     const compPath = path.isAbsolute(comp.path)
       ? comp.path
       : path.resolve(workspaceRoot, comp.path);

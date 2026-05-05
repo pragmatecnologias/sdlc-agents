@@ -10,6 +10,7 @@ import * as os from 'os';
 import {
   captureBranchSafety,
   checkDirtyComponents,
+  createTaskBranches,
   formatBranchSafetyReport,
 } from '../../src/tools/branchSafety.js';
 import { loadBranchSafetyState, saveBranchSafetyState } from '../../src/tools/branchSafety.js';
@@ -150,5 +151,101 @@ describe('formatBranchSafetyReport', () => {
     expect(report).toContain('Branch:');
 
     await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe('createTaskBranches', () => {
+  let tmpDir: string;
+  let uiDir: string;
+  let backendDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sea-branch-create-'));
+
+    // Create separate git repos for each component (they share the workspace root but are independent repos)
+    uiDir = path.join(tmpDir, 'ui');
+    backendDir = path.join(tmpDir, 'backend');
+    await fs.mkdir(uiDir, { recursive: true });
+    await fs.mkdir(backendDir, { recursive: true });
+
+    await fs.writeFile(path.join(uiDir, 'index.ts'), 'export const ui = 1;\n');
+    await fs.writeFile(path.join(backendDir, 'index.ts'), 'export const backend = 1;\n');
+
+    execSync('git init && git add -A && git commit -m "initial"', {
+      cwd: uiDir,
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    execSync('git init && git add -A && git commit -m "initial"', {
+      cwd: backendDir,
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+  });
+
+  afterAll(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('default: creates branches only for modify components', async () => {
+    const components = [
+      makeComponent('ui', uiDir),
+      makeComponent('backend', backendDir),
+    ];
+
+    const componentStates = {
+      ui: { changeRole: 'modify' },
+      backend: { changeRole: 'no_change' },
+    };
+
+    const result = await createTaskBranches(
+      'run-branch-test-1',
+      tmpDir,
+      components,
+      path.join(tmpDir, '.sea'),
+      { onlyModifyComponents: true, componentStates }
+    );
+
+    // ui should have a branch created
+    const uiState = result.componentBranchStates.find(c => c.componentName === 'ui');
+    expect(uiState).toBeDefined();
+    expect(uiState!.branchCreated).toBeTruthy();
+    expect(uiState!.branchCreated).toContain('sea/');
+
+    // backend should NOT have a branch created
+    const backendState = result.componentBranchStates.find(c => c.componentName === 'backend');
+    expect(backendState).toBeDefined();
+    expect(backendState!.branchCreated).toBeNull();
+  });
+
+  it('--all: creates branches for all components', async () => {
+    const components = [
+      makeComponent('ui', uiDir),
+      makeComponent('backend', backendDir),
+    ];
+
+    const componentStates = {
+      ui: { changeRole: 'modify' },
+      backend: { changeRole: 'no_change' },
+    };
+
+    const result = await createTaskBranches(
+      'run-branch-test-2',
+      tmpDir,
+      components,
+      path.join(tmpDir, '.sea'),
+      { onlyModifyComponents: false, componentStates }
+    );
+
+    // Both should have branches created
+    const uiState = result.componentBranchStates.find(c => c.componentName === 'ui');
+    expect(uiState).toBeDefined();
+    expect(uiState!.branchCreated).toBeTruthy();
+
+    const backendState = result.componentBranchStates.find(c => c.componentName === 'backend');
+    expect(backendState).toBeDefined();
+    expect(backendState!.branchCreated).toBeTruthy();
+
+    expect(result.branches).toHaveLength(2);
   });
 });

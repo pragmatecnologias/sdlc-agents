@@ -360,7 +360,7 @@ async function handleStatusInteractive(workspacePath: string): Promise<void> {
   }
 
   const state = stateResult.state as unknown as WorkspaceState;
-  const display = buildStatusDisplay(state, workspacePath);
+  const display = await buildStatusDisplay(state, workspacePath);
   renderRunBoard(display, workspacePath);
 }
 
@@ -432,7 +432,7 @@ async function handleMemory(workspacePath: string): Promise<void> {
 // ============================================================================
 
 async function showRunBoardInteractive(state: WorkspaceState, workspacePath: string): Promise<void> {
-  const display = buildStatusDisplay(state, workspacePath);
+  const display = await buildStatusDisplay(state, workspacePath);
   renderRunBoard(display, workspacePath);
 
   const nextAction = determineNextAction(state);
@@ -451,7 +451,7 @@ async function showRunBoardInteractive(state: WorkspaceState, workspacePath: str
   await executeAction(state, choice as string, workspacePath);
 }
 
-function getAvailableActions(state: WorkspaceState, nextAction: NextAction): Array<{ name: string; value: string }> {
+export function getAvailableActions(state: WorkspaceState, nextAction: NextAction): Array<{ name: string; value: string }> {
   const actions: Array<{ name: string; value: string }> = [];
 
   switch (nextAction.type) {
@@ -759,5 +759,5 @@ async function handleResume(runId: string, workspacePath: string): Promise<void>
 }
 
 async function handleShowReport(state: WorkspaceState, workspacePath: string): Promise<void> {
-  renderReport(state, workspacePath);
+  await renderReport(state, workspacePath);
 }

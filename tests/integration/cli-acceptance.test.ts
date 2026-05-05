@@ -151,6 +151,8 @@ describe('SEA CLI Acceptance Test', () => {
     expect(output).toContain('Change Role:');
     expect(output).toContain('# Execution Request');
     expect(output).toContain('sea after-execution');
+    // Verify Relevant Context section exists
+    expect(output).toContain('Relevant Context');
   });
 
   it('4. sea after-execution captures git evidence after file change', async () => {

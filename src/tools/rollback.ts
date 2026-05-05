@@ -10,6 +10,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { getRunPaths, loadState } from '../workflow/checkpoint.js';
@@ -33,6 +34,15 @@ export interface RollbackResult {
   reports: string[];      // paths to per-component rollback reports
 }
 
+export type FileClassification = 'tracked-modified' | 'untracked-added' | 'deleted' | 'renamed' | 'failed' | 'unknown';
+
+export interface FileRollbackResult {
+  file: string;
+  classification: FileClassification;
+  action: 'restored' | 'removed' | 'skipped' | 'failed';
+  error: string | null;
+}
+
 export interface RollbackReport {
   runId: string;
   componentName: string;
@@ -40,6 +50,8 @@ export interface RollbackReport {
   rolledBack: boolean;
   method: 'git-checkout' | 'patch-revert' | 'none';
   filesReverted: string[];
+  fileResults: FileRollbackResult[];
+  unhandledFiles: string[];
   branchRestored: string | null;
   error: string | null;
   timestamp: string;
@@ -180,37 +192,69 @@ async function rollbackComponent(
     rolledBack: false,
     method: 'none',
     filesReverted: [],
+    fileResults: [],
+    unhandledFiles: [],
     branchRestored: null,
     error: null,
     timestamp: new Date().toISOString(),
   };
 
   try {
-    // Method: git checkout changed files
     if (target.changedFiles.length > 0) {
+      // Classify each file using git status
+      const classifications = classifyFiles(target.componentPath, target.changedFiles);
+
       for (const file of target.changedFiles) {
+        const classification = classifications.get(file) || 'unknown';
+        const fileResult: FileRollbackResult = { file, classification, action: 'failed', error: null };
+
         try {
-          execSync(`git checkout -- "${file}"`, {
-            cwd: target.componentPath,
-            encoding: 'utf-8',
-            timeout: 10000,
-            stdio: ['pipe', 'pipe', 'ignore'],
-          });
-          report.filesReverted.push(file);
-        } catch {
-          // Try relative path
-          try {
-            execSync(`git checkout -- "${file}"`, {
-              cwd: target.componentPath,
-              encoding: 'utf-8',
-              timeout: 10000,
-              stdio: ['pipe', 'pipe', 'ignore'],
-            });
-            report.filesReverted.push(file);
-          } catch (err) {
-            // File might not exist in git
+          switch (classification) {
+            case 'tracked-modified':
+            case 'deleted': {
+              // Restore tracked files via git checkout
+              execSync(`git checkout -- "${file}"`, {
+                cwd: target.componentPath,
+                encoding: 'utf-8',
+                timeout: 10000,
+                stdio: ['pipe', 'pipe', 'ignore'],
+              });
+              fileResult.action = 'restored';
+              report.filesReverted.push(file);
+              break;
+            }
+            case 'untracked-added': {
+              // Remove untracked files
+              const fullPath = path.resolve(target.componentPath, file);
+              await fs.unlink(fullPath).catch(() => {});
+              // Also try removing empty parent directories
+              const parentDir = path.dirname(fullPath);
+              await fs.rmdir(parentDir).catch(() => {});
+              fileResult.action = 'removed';
+              break;
+            }
+            case 'renamed': {
+              // For renamed files, try to restore the original name
+              // git checkout won't help here — report as skipped
+              fileResult.action = 'skipped';
+              fileResult.error = 'Renamed file — manual restoration may be needed';
+              report.unhandledFiles.push(file);
+              break;
+            }
+            default: {
+              fileResult.action = 'skipped';
+              fileResult.error = 'Unknown file classification';
+              report.unhandledFiles.push(file);
+              break;
+            }
           }
+        } catch (err) {
+          fileResult.action = 'failed';
+          fileResult.error = err instanceof Error ? err.message : String(err);
+          report.unhandledFiles.push(file);
         }
+
+        report.fileResults.push(fileResult);
       }
       report.method = 'git-checkout';
     }
@@ -240,6 +284,68 @@ async function rollbackComponent(
   await fs.writeFile(componentReportPath, JSON.stringify(report, null, 2), 'utf-8');
 
   return report;
+}
+
+/**
+ * Classify files by their git status in the component directory.
+ * Returns a Map from filename to classification.
+ */
+export function classifyFiles(componentPath: string, files: string[]): Map<string, FileClassification> {
+  const classifications = new Map<string, FileClassification>();
+
+  try {
+    // Get git status --porcelain for all files
+    const statusOutput = execSync('git status --porcelain', {
+      cwd: componentPath,
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+
+    // Parse porcelain status: XY filename
+    // X = index status, Y = worktree status
+    // ?? = untracked, A = added, D = deleted, R = renamed, M = modified
+    const statusMap = new Map<string, string>();
+    for (const line of statusOutput.split('\n')) {
+      if (line.length < 3) continue;
+      const xy = line.substring(0, 2);
+      const filePath = line.substring(3).trim();
+      statusMap.set(filePath, xy);
+    }
+
+    for (const file of files) {
+      const xy = statusMap.get(file);
+      if (!xy) {
+        // File not in git status — might have been committed or doesn't exist
+        // Check if file exists on disk
+        try {
+          fsSync.accessSync(path.resolve(componentPath, file));
+          // File exists but not in git status — might be committed
+          classifications.set(file, 'tracked-modified');
+        } catch {
+          // File doesn't exist on disk — likely deleted
+          classifications.set(file, 'deleted');
+        }
+      } else if (xy === '??') {
+        classifications.set(file, 'untracked-added');
+      } else if (xy[0] === 'D' || xy[1] === 'D') {
+        classifications.set(file, 'deleted');
+      } else if (xy[0] === 'R' || xy.includes('->')) {
+        classifications.set(file, 'renamed');
+      } else if (xy[0] === 'A') {
+        classifications.set(file, 'untracked-added');
+      } else {
+        classifications.set(file, 'tracked-modified');
+      }
+    }
+  } catch {
+    // git status failed — default everything to unknown
+    for (const file of files) {
+      classifications.set(file, 'unknown');
+    }
+  }
+
+  return classifications;
 }
 
 /**
@@ -286,6 +392,10 @@ export function formatRollbackPreview(targets: RollbackTarget[]): string {
   }
 
   lines.push('───────────────────────────────────────────────────────────────');
+  lines.push('  Tracked files will be restored via git checkout');
+  lines.push('  Untracked files will be removed');
+  lines.push('  Renamed files will be reported (manual action needed)');
+  lines.push('');
   lines.push('  To apply rollback, run: sea rollback <runId> --yes');
   lines.push('  To rollback a specific component: sea rollback <runId> -c <name> --yes');
   lines.push('═══════════════════════════════════════════════════════════════');
