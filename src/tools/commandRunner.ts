@@ -19,6 +19,7 @@ export interface CommandOptions {
   continueOnError?: (result: CommandResult) => boolean;
   autoSave?: boolean; // automatically save stdout/stderr to files
   saveDir?: string; // directory to save output files when autoSave is true
+  commandName?: string; // logical name (e.g. "test", "build") — overrides auto-derived name
 }
 
 /**
@@ -31,7 +32,7 @@ export async function runCommand(
   const startedAt = new Date().toISOString();
   const startTime = Date.now();
   const component = options.cwd || 'unknown';
-  const commandName = path.basename(command.split(' ')[0]);
+  const commandName = options.commandName || path.basename(command.split(' ')[0]);
 
   return new Promise<CommandResult>((resolve) => {
     const {

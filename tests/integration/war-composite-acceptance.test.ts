@@ -216,6 +216,16 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
     );
     expect(hasDiff).toBe(true);
 
+    // Backend must have captured a real diff (we modified Service.java)
+    const backendCS = state.componentStates['backend'];
+    expect(backendCS.changedFiles.length).toBeGreaterThan(0);
+    expect(backendCS.diffPath).toBeTruthy();
+
+    // UI must have captured a real diff (we modified index.ts)
+    const uiCS = state.componentStates['ui'];
+    expect(uiCS.changedFiles.length).toBeGreaterThan(0);
+    expect(uiCS.diffPath).toBeTruthy();
+
     // Artifact inspection must exist for war-builder
     const warInspection = state.artifactInspections?.find(
       (ai: any) => ai.component === 'war-builder'
@@ -224,7 +234,15 @@ describe('SEA WAR Composite Enterprise Acceptance Test', () => {
     // status is 'warning' because fixture has .gitkeep placeholders, not real .class/.jar files
     expect(['passed', 'warning']).toContain(warInspection.status);
 
+    // war-builder must have command results from verification
+    const warCS = state.componentStates['war-builder'];
+    expect(warCS.commandResults.length).toBeGreaterThan(0);
+
     // Report must show next action
     expect(output).toContain('Next Action');
+
+    // Report must NOT show silent success — evidence must be visible
+    // diff paths must be in the report for modified components
+    expect(output).toContain('diff');
   });
 });

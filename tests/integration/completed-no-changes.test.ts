@@ -97,4 +97,19 @@ describe('completed_no_changes handling', () => {
     expect(state.componentStates.backend.executorResult.status).toBe('completed_no_changes');
     expect(state.componentStates.ui.executorResult.status).toBe('completed_no_changes');
   });
+
+  it('final decision does not approve modify component with completed_no_changes', async () => {
+    // Run resume to progress through remaining phases to final decision
+    const resumeOutput = runCli(`resume ${runId} -w ${workspacePath}`);
+    expect(resumeOutput).toContain('Resuming');
+
+    // Verify state has final decision
+    const statePath = path.join(tmpDir, '.sea', 'runs', runId, 'state.json');
+    const state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+    expect(state.finalDecision).toBeDefined();
+
+    // Must NOT be APPROVED or APPROVED_WITH_NOTES — completed_no_changes is not evidence
+    const approvalVerdicts = ['APPROVED', 'APPROVED_WITH_NOTES'];
+    expect(approvalVerdicts).not.toContain(state.finalDecision.decision);
+  });
 });

@@ -139,6 +139,7 @@ export function createVerificationAgent(): (
             timeout: 300000,
             autoSave: true,
             saveDir: componentSaveDir,
+            commandName: cmd.name,
           });
 
           commandsRun++;

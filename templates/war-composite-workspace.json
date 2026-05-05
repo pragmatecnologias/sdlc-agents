@@ -1,0 +1,106 @@
+{
+  "workspaceName": "enterprise-war-app",
+  "projectProfile": "WAR_COMPOSITE_APP",
+  "defaultExecutor": "manual",
+  "approvalPolicy": {
+    "requireBeforeImplementation": false,
+    "requireForAuthChanges": false,
+    "requireForDatabaseMigrations": false,
+    "requireForPackageChanges": false,
+    "requireForBuildConfigChanges": false,
+    "requireForDeletingFiles": false
+  },
+  "qualityGates": {
+    "requireSourceRepoCleanBeforeRun": false,
+    "requireFinalArtifactBuild": false,
+    "requireArtifactInspection": false,
+    "blockOnForbiddenPathModification": true,
+    "blockOnProtectedPathModificationWithoutApproval": true,
+    "warnIfNoSmokeTest": true
+  },
+  "components": [
+    {
+      "name": "ui",
+      "path": "ui",
+      "kind": "frontend",
+      "role": "source",
+      "technology": "typescript",
+      "framework": "react",
+      "packageManager": "npm",
+      "commands": {
+        "install": "npm ci",
+        "lint": "npm run lint",
+        "typecheck": "npm run typecheck",
+        "test": "npm test",
+        "build": "npm run build"
+      },
+      "artifact": {
+        "type": "static-bundle",
+        "outputGlob": "dist/**/*"
+      },
+      "dependencies": [],
+      "produces": ["static-assets"],
+      "protectedPaths": ["public/"],
+      "forbiddenPaths": ["node_modules/"]
+    },
+    {
+      "name": "backend",
+      "path": "backend",
+      "kind": "backend",
+      "role": "source",
+      "technology": "java",
+      "framework": "spring-boot",
+      "packageManager": "maven",
+      "commands": {
+        "install": "mvn dependency:resolve",
+        "test": "mvn test",
+        "build": "mvn package -DskipTests",
+        "lint": "mvn checkstyle:check"
+      },
+      "artifact": {
+        "type": "jar",
+        "outputPath": "target/backend.jar"
+      },
+      "dependencies": [],
+      "produces": ["classes"],
+      "protectedPaths": ["src/main/resources/application-prod.yml"],
+      "forbiddenPaths": ["src/main/resources/application-prod.yml"]
+    },
+    {
+      "name": "war-builder",
+      "path": "war-builder",
+      "kind": "assembly",
+      "role": "packager",
+      "technology": "shell",
+      "commands": {
+        "build": "./assemble.sh",
+        "test": "./verify-war.sh",
+        "custom": {
+          "package": "./assemble.sh"
+        }
+      },
+      "artifact": {
+        "type": "war",
+        "outputPath": "output/app.war",
+        "requiredEntries": [
+          "WEB-INF/",
+          "WEB-INF/classes/",
+          "WEB-INF/lib/",
+          "WEB-INF/web.xml"
+        ],
+        "inspectionProfile": "war"
+      },
+      "dependencies": ["ui", "backend"],
+      "produces": ["war"],
+      "forbiddenPaths": ["ui/", "backend/"]
+    }
+  ],
+  "globalProtectedPaths": [".git/", ".env", "*.key", "*.pem"],
+  "memory": {
+    "enabled": true,
+    "path": "engineering_memory.md"
+  },
+  "artifacts": {
+    "rootDir": ".sea/runs"
+  }
+}

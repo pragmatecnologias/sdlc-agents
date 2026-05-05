@@ -107,4 +107,23 @@ describe('resolveComponentArtifact', () => {
       expect(result.error).toContain('outputGlob failed');
     }
   });
+
+  it('ignores directories when matching outputGlob', async () => {
+    const compDir = path.join(tmpDir, 'glob-ignore-dirs');
+    await fs.mkdir(path.join(compDir, 'output'), { recursive: true });
+    // Create a directory that matches the glob pattern name
+    await fs.mkdir(path.join(compDir, 'output', 'app.war'), { recursive: true });
+    // Create a real file that also matches
+    await fs.writeFile(path.join(compDir, 'output', 'real.war'), 'war-content');
+
+    const result = await resolveComponentArtifact(compDir, undefined, 'output/*.war');
+
+    expect(result.artifactPath).toBe(path.join(compDir, 'output', 'real.war'));
+    expect(result.resolvedVia).toBe('outputGlob');
+    if (result.resolvedVia === 'outputGlob') {
+      // Should only match the file, not the directory
+      expect(result.globInfo!.allMatches).toHaveLength(1);
+      expect(result.globInfo!.allMatches[0]).toContain('real.war');
+    }
+  });
 });
