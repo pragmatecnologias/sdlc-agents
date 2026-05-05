@@ -59,12 +59,16 @@ export function createDiffInspectorAgent(): (
       );
 
       // Update component state
+      // Preserve existing changedFiles from after-execution if available,
+      // since diff inspection may return repo-wide files instead of component-scoped ones
       updatedComponentStates[componentName] = {
         ...componentState,
-        changedFiles: result.changedFiles,
+        changedFiles: componentState.changedFiles.length > 0
+          ? componentState.changedFiles
+          : result.changedFiles,
         forbiddenPathViolations: result.forbiddenPathViolations,
         protectedPathViolations: result.protectedPathViolations,
-        diffPath: `${state.runId}/components/${componentName}/diff.patch`,
+        diffPath: componentState.diffPath || `${state.runId}/components/${componentName}/diff.patch`,
       };
 
       allViolations.push(...result.forbiddenPathViolations);

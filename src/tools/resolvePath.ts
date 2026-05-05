@@ -96,3 +96,118 @@ export function resolveArtifactPath(
   }
   return path.resolve(componentPath, outputPath);
 }
+
+// ---------------------------------------------------------------------------
+// outputGlob resolution with mtime-based newest-file selection
+// ---------------------------------------------------------------------------
+
+export interface GlobMatchInfo {
+  /** Absolute directory the glob was resolved against */
+  globDir: string;
+  /** Original glob pattern string */
+  globPattern: string;
+  /** All matching file paths (files only, not directories) */
+  allMatches: string[];
+  /** The selected artifact path (newest by mtime) */
+  selectedPath: string | null;
+  /** Why this file was selected (or why none was) */
+  reason: string;
+}
+
+/**
+ * Resolve an outputGlob pattern against a component path.
+ *
+ * Supports simple glob patterns like `target/*.war`, `build/libs/*.jar`, `output/*.war`.
+ * If multiple files match, the newest file (by mtime) is selected.
+ * Only files (not directories) are considered.
+ *
+ * @param componentPath - Absolute path to the component directory
+ * @param outputGlob - Glob pattern relative to componentPath (e.g. "output/*.war")
+ * @returns GlobMatchInfo with all matches and selected file
+ */
+export async function resolveOutputGlob(
+  componentPath: string,
+  outputGlob: string
+): Promise<GlobMatchInfo> {
+  const globAbsolute = path.resolve(componentPath, outputGlob);
+  const globDir = path.dirname(globAbsolute);
+  const globBasename = path.basename(globAbsolute);
+
+  // Convert simple glob * to regex
+  // Supports patterns like: *.war, app-*.jar, build-?.zip
+  const regexStr = globBasename
+    .replace(/\./g, '\\.')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  const regex = new RegExp(`^${regexStr}$`);
+
+  const fs = await import('fs/promises');
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(globDir);
+  } catch {
+    return {
+      globDir,
+      globPattern: outputGlob,
+      allMatches: [],
+      selectedPath: null,
+      reason: `Directory does not exist: ${globDir}`,
+    };
+  }
+
+  // Filter to regex matches, then to files only (not directories)
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!regex.test(entry)) continue;
+    const fullPath = path.join(globDir, entry);
+    try {
+      const stat = await fs.stat(fullPath);
+      if (stat.isFile()) {
+        candidates.push(fullPath);
+      }
+    } catch {
+      // skip unreadable entries
+    }
+  }
+
+  if (candidates.length === 0) {
+    return {
+      globDir,
+      globPattern: outputGlob,
+      allMatches: [],
+      selectedPath: null,
+      reason: `No files matching "${outputGlob}" found in ${globDir}`,
+    };
+  }
+
+  if (candidates.length === 1) {
+    return {
+      globDir,
+      globPattern: outputGlob,
+      allMatches: candidates,
+      selectedPath: candidates[0],
+      reason: `Single match: ${path.basename(candidates[0])}`,
+    };
+  }
+
+  // Multiple matches: sort by mtime descending, pick newest
+  const withMtime = await Promise.all(
+    candidates.map(async (p) => {
+      const stat = await fs.stat(p);
+      return { path: p, mtime: stat.mtimeMs };
+    })
+  );
+  withMtime.sort((a, b) => b.mtime - a.mtime);
+
+  const selected = withMtime[0];
+  const allNames = withMtime.map(m => path.basename(m.path)).join(', ');
+
+  return {
+    globDir,
+    globPattern: outputGlob,
+    allMatches: withMtime.map(m => m.path),
+    selectedPath: selected.path,
+    reason: `Selected newest of ${candidates.length} matches: ${path.basename(selected.path)} (${allNames})`,
+  };
+}

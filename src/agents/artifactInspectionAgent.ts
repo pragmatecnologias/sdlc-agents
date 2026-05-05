@@ -9,7 +9,7 @@ import AdmZip from 'adm-zip';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { ArtifactInspectionReport, ArtifactType } from '../state/schemas.js';
 import { saveComponentArtifact } from '../workflow/checkpoint.js';
-import { resolveComponentPathFromState, resolveArtifactPath } from '../tools/resolvePath.js';
+import { resolveComponentPathFromState, resolveArtifactPath, resolveOutputGlob } from '../tools/resolvePath.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ArtifactInspectionAgent');
@@ -50,19 +50,14 @@ export function createArtifactInspectionAgent(): (
         ? resolveArtifactPath(componentPath, component.artifact.outputPath)
         : undefined;
 
-      // Support outputGlob: find matching file
+      // Support outputGlob: find matching file (newest by mtime)
       if (!artifactPath && component.artifact.outputGlob) {
-        const globPattern = path.resolve(componentPath, component.artifact.outputGlob);
-        const globBase = path.dirname(globPattern);
-        const globMatch = path.basename(globPattern).replace(/\*/g, '.*');
-        try {
-          const entries = await fs.readdir(globBase);
-          const matched = entries.find(e => new RegExp(`^${globMatch}$`).test(e));
-          if (matched) {
-            artifactPath = path.join(globBase, matched);
-          }
-        } catch {
-          // directory doesn't exist or can't be read
+        const globResult = await resolveOutputGlob(componentPath, component.artifact.outputGlob);
+        if (globResult.selectedPath) {
+          artifactPath = globResult.selectedPath;
+          logger.info(`outputGlob resolved: ${globResult.reason}`);
+        } else {
+          logger.warn(`outputGlob failed: ${globResult.reason}`);
         }
       }
 

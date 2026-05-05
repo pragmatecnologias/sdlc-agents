@@ -189,6 +189,15 @@ export function createBrutalRealityCheckAgent(): (
       ) {
         fakeOrUnverified.push(`${componentName}: executor claims completion but no command results captured`);
       }
+
+      // completed_no_changes: executor ran but produced no file modifications
+      if (
+        cs.changeRole === 'modify' &&
+        cs.executorResult &&
+        cs.executorResult.status === 'completed_no_changes'
+      ) {
+        missing.push(`${componentName}: execution completed but no files were changed (not successful implementation evidence)`);
+      }
     }
 
     // -----------------------------------------------------------------------

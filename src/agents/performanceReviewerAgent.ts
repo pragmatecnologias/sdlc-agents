@@ -41,7 +41,7 @@ export function createPerformanceReviewerAgent(): (
       // Read the diff content for this component
       let diffContent = '';
       if (componentState.diffPath) {
-        const diffFilePath = path.join(runPaths.componentsDir, componentState.diffPath);
+        const diffFilePath = path.join(runPaths.runDir, componentState.diffPath);
         try {
           diffContent = await fs.readFile(diffFilePath, 'utf-8');
         } catch {

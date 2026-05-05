@@ -100,6 +100,12 @@ export function createExecutionAgent(): (
 
         const cs = updatedComponentStates[componentName];
 
+        // Skip components that already have evidence captured (resume after after-execution)
+        if (cs.executorResult?.status === 'completed' || cs.executorResult?.status === 'completed_no_changes') {
+          logger.info(`Component ${componentName} already has evidence captured - skipping`);
+          continue;
+        }
+
         // Determine executor type from workspace config
         const executor = (workspace.defaultExecutor || 'manual') as string;
 
@@ -156,9 +162,12 @@ export function createExecutionAgent(): (
     }
 
     // Determine run status
-    const newRunStatus: WorkspaceState['runStatus'] = hasAwaitingManual
-      ? 'awaiting_manual_execution'
-      : 'executing';
+    // If evidence was already captured (resume after after-execution), preserve that status
+    const newRunStatus = state.runStatus === 'evidence_captured'
+      ? 'evidence_captured'
+      : hasAwaitingManual
+        ? 'awaiting_manual_execution'
+        : 'executing';
 
     logger.info(
       `Execution setup complete: ${Object.keys(updatedComponentStates).length} components processed, status: ${newRunStatus}`

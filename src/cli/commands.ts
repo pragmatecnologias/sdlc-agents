@@ -690,171 +690,13 @@ async function handleAfterExecution(runId: string, component: string, workspaceP
 async function handleValidateWorkspace(workspacePath: string): Promise<void> {
   logger.info(`Validating workspace: ${workspacePath}`);
 
-  let workspaceConfig: WorkspaceConfig;
-  try {
-    const raw = await fs.readFile(path.resolve(workspacePath), 'utf-8');
-    workspaceConfig = JSON.parse(raw);
-  } catch (err) {
-    console.error(`  FAIL  Cannot read workspace file: ${workspacePath}`);
+  const { validateWorkspaceConfig, printValidationResult } = await import('../tools/workspaceValidator.js');
+  const result = await validateWorkspaceConfig(workspacePath);
+
+  printValidationResult(result);
+
+  if (result.status === 'failed') {
     process.exit(1);
-  }
-
-  const workspaceRoot = resolveWorkspaceRoot(workspacePath);
-  console.log(`  Workspace file:    ${workspacePath}`);
-  console.log(`  Workspace root:    ${workspaceRoot}`);
-  console.log(`  Workspace name:    ${workspaceConfig.workspaceName || '(not set)'}`);
-  console.log(`  Profile:           ${workspaceConfig.projectProfile || '(not set)'}`);
-
-  let hasErrors = false;
-
-  // Check workspace root exists
-  try {
-    await fs.access(workspaceRoot);
-  } catch {
-    console.error(`  FAIL  Workspace root does not exist: ${workspaceRoot}`);
-    hasErrors = true;
-  }
-
-  // Validate projectProfile is recognized
-  if (workspaceConfig.projectProfile) {
-    const knownProfiles = [
-      'SINGLE_REPO_FRONTEND', 'SINGLE_REPO_BACKEND', 'MONOREPO_WEB_APP',
-      'MULTI_REPO_ENTERPRISE_APP', 'WAR_COMPOSITE_APP', 'SPRING_BOOT_SERVICE',
-      'NODE_API', 'REACT_APP', 'ANGULAR_APP', 'VUE_APP', 'CHROME_EXTENSION',
-      'THREEJS_GAME', 'PYTHON_CLI', 'LIBRARY_PACKAGE', 'MICROSERVICES_WORKSPACE',
-      'INFRASTRUCTURE_REPO', 'DOCUMENTATION_REPO', 'CUSTOM',
-    ];
-    if (!knownProfiles.includes(workspaceConfig.projectProfile)) {
-      console.error(`  WARN  Unknown project profile: ${workspaceConfig.projectProfile}`);
-    }
-  } else {
-    console.log(`  WARN  No projectProfile set — profile detection will be used`);
-  }
-
-  // Validate components
-  const components = workspaceConfig.components || [];
-  if (components.length === 0) {
-    console.error(`  FAIL  No components defined`);
-    hasErrors = true;
-  }
-
-  console.log(`  Components:        ${components.length}`);
-
-  const componentNames = new Set<string>();
-
-  for (const comp of components) {
-    const prefix = `  [${comp.name}]`;
-
-    if (!comp.name) {
-      console.error(`${prefix} FAIL  Component has no name`);
-      hasErrors = true;
-      continue;
-    }
-
-    if (componentNames.has(comp.name)) {
-      console.error(`${prefix} FAIL  Duplicate component name: ${comp.name}`);
-      hasErrors = true;
-    }
-    componentNames.add(comp.name);
-
-    // Resolve and validate component path
-    const compPath = path.isAbsolute(comp.path) ? comp.path : path.resolve(workspaceRoot, comp.path);
-    try {
-      const stat = await fs.stat(compPath);
-      if (!stat.isDirectory()) {
-        console.error(`${prefix} FAIL  Component path is not a directory: ${compPath}`);
-        hasErrors = true;
-      }
-    } catch {
-      console.error(`${prefix} FAIL  Component path does not exist: ${compPath}`);
-      hasErrors = true;
-      continue;
-    }
-
-    // Check if component path is a git repo (warning for test fixtures)
-    const gitDir = path.join(compPath, '.git');
-    try {
-      await fs.access(gitDir);
-      console.log(`${prefix} path: ${compPath} (git repo: yes)`);
-    } catch {
-      console.log(`${prefix} path: ${compPath} (git repo: no — WARN)`);
-    }
-
-    // Validate commands are present and non-empty for source/application components
-    const verifyRoles = ['source', 'application', 'service', 'packager', 'assembler', 'test-suite'];
-    const isVerifyTarget = verifyRoles.includes(comp.role) || verifyRoles.includes(comp.kind);
-    if (isVerifyTarget && (!comp.commands || Object.keys(comp.commands).length === 0)) {
-      console.error(`${prefix} FAIL  No commands configured for component that will be verified`);
-      hasErrors = true;
-    } else if (isVerifyTarget && comp.commands) {
-      const nonEmpty = Object.entries(comp.commands).filter(([, v]) => typeof v === 'string' && v.trim().length > 0);
-      if (nonEmpty.length === 0) {
-        console.error(`${prefix} FAIL  All commands are empty for verifiable component`);
-        hasErrors = true;
-      }
-    }
-
-    // Validate assembly/packager components have artifact config
-    const artifactRoles = ['packager', 'assembler'];
-    const isArtifactComponent = artifactRoles.includes(comp.role) || comp.kind === 'assembly';
-    if (isArtifactComponent && !comp.artifact) {
-      console.error(`${prefix} FAIL  Assembly/packager component must have artifact config`);
-      hasErrors = true;
-    }
-
-    // Validate artifact config details
-    if (comp.artifact && comp.artifact.type !== 'none') {
-      if (comp.artifact.type === 'war' || comp.artifact.type === 'jar' || comp.artifact.type === 'ear') {
-        if (!comp.artifact.outputPath && !comp.artifact.outputGlob) {
-          console.error(`${prefix} FAIL  ${comp.artifact.type.toUpperCase()} artifact must have outputPath or outputGlob`);
-          hasErrors = true;
-        }
-      }
-    }
-
-    // Validate dependencies reference existing components
-    if (comp.dependencies && comp.dependencies.length > 0) {
-      for (const dep of comp.dependencies) {
-        if (!componentNames.has(dep) && !componentNames.has(dep)) {
-          // May reference a component not yet seen (check after all names are collected)
-        }
-      }
-    }
-  }
-
-  // Second pass: validate dependencies reference existing components
-  for (const comp of components) {
-    if (comp.dependencies && comp.dependencies.length > 0) {
-      for (const dep of comp.dependencies) {
-        if (!componentNames.has(dep)) {
-          const prefix = `  [${comp.name}]`;
-          console.error(`${prefix} WARN  Dependency '${dep}' does not reference a known component`);
-          hasErrors = true;
-        }
-      }
-    }
-  }
-
-  // Validate protectedPaths and forbiddenPaths are arrays
-  for (const comp of components) {
-    const prefix = `  [${comp.name}]`;
-    if (comp.protectedPaths && !Array.isArray(comp.protectedPaths)) {
-      console.error(`${prefix} FAIL  protectedPaths must be an array`);
-      hasErrors = true;
-    }
-    if (comp.forbiddenPaths && !Array.isArray(comp.forbiddenPaths)) {
-      console.error(`${prefix} FAIL  forbiddenPaths must be an array`);
-      hasErrors = true;
-    }
-  }
-
-  // Summary
-  console.log();
-  if (hasErrors) {
-    console.error('Validation FAILED — fix the errors above before running sea plan/run');
-    process.exit(1);
-  } else {
-    console.log('Validation PASSED — workspace is ready for use');
   }
 }
 
@@ -971,19 +813,19 @@ async function handleInspectArtifact(
     ? resolveArtifactPath(componentPath, componentConfig.artifact.outputPath)
     : undefined;
 
-  // Support outputGlob: find matching file
+  // Support outputGlob: find matching file (newest by mtime)
+  let globDisplayInfo: string | undefined;
   if (!artifactPath && componentConfig.artifact.outputGlob) {
-    const globPattern = path.resolve(componentPath, componentConfig.artifact.outputGlob);
-    const globBase = path.dirname(globPattern);
-    const globMatch = path.basename(globPattern).replace(/\*/g, '.*');
-    try {
-      const entries = await fs.readdir(globBase);
-      const matched = entries.find(e => new RegExp(`^${globMatch}$`).test(e));
-      if (matched) {
-        artifactPath = path.join(globBase, matched);
-      }
-    } catch {
-      // directory doesn't exist or can't be read
+    const { resolveOutputGlob } = await import('../tools/resolvePath.js');
+    const globResult = await resolveOutputGlob(componentPath, componentConfig.artifact.outputGlob);
+    if (globResult.selectedPath) {
+      artifactPath = globResult.selectedPath;
+      globDisplayInfo = `Glob: ${componentConfig.artifact.outputGlob} → ${globResult.allMatches.length} match(es), selected: ${path.basename(globResult.selectedPath)} (${globResult.reason})`;
+    } else {
+      console.error(`outputGlob failed for '${componentName}': ${globResult.reason}`);
+      console.error(`  Component path: ${componentPath}`);
+      console.error(`  Glob pattern:   ${componentConfig.artifact.outputGlob}`);
+      process.exit(1);
     }
   }
 
@@ -1045,6 +887,9 @@ async function handleInspectArtifact(
 
   // Print inspection result
   console.log(`\n=== Artifact Inspection: ${componentName} ===`);
+  if (globDisplayInfo) {
+    console.log(`  Glob Info:  ${globDisplayInfo}`);
+  }
   console.log(`  Artifact:   ${inspection.artifactPath}`);
   console.log(`  Type:      ${inspection.artifactType}`);
   console.log(`  Status:    ${inspection.status}`);
@@ -1290,6 +1135,9 @@ async function handleReport(runId: string, workspacePath?: string): Promise<void
       for (const [name, cs] of Object.entries(state.componentStates)) {
         if (cs.changeRole === 'modify' && cs.changedFiles.length === 0) {
           missing.push(`${name}: marked as modify but no files changed`);
+        }
+        if (cs.changeRole === 'modify' && cs.executorResult?.status === 'completed_no_changes') {
+          missing.push(`${name}: execution completed but no files changed (not successful implementation evidence)`);
         }
       }
     }

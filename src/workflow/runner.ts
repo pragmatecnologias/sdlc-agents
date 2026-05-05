@@ -26,6 +26,7 @@ import {
   listCheckpoints,
   getLatestCheckpoint,
   saveState,
+  loadState,
   getRunPaths,
 } from './checkpoint.js';
 import { createLogger } from '../utils/logger.js';
@@ -86,7 +87,17 @@ export class WorkflowRunner {
       throw new Error(`No checkpoints found for run ${runId}`);
     }
 
-    const state = await loadCheckpoint(runId, latestCheckpoint.name.replace('.json', ''), this.options.baseDir);
+    const checkpointState = await loadCheckpoint(runId, latestCheckpoint.name.replace('.json', ''), this.options.baseDir);
+
+    // Merge current state.json on top of checkpoint to preserve updates
+    // (e.g., after-execution may have updated runStatus, componentStates, etc.)
+    let state: WorkspaceState;
+    try {
+      const currentState = await loadState(runId, this.options.baseDir);
+      state = { ...checkpointState, ...currentState } as WorkspaceState;
+    } catch {
+      state = checkpointState;
+    }
     // Restore baseDir from options (not stored in checkpoint)
     state.baseDir = this.options.baseDir;
     logger.info(`Resuming from checkpoint: ${latestCheckpoint.name}`);

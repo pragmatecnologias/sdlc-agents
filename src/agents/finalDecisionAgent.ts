@@ -265,6 +265,15 @@ function determineVerdict(
     if (modifiedWithCommands.length > 0) {
       return 'NEEDS_FIXES';
     }
+
+    // completed_no_changes is not successful implementation evidence
+    const modifiedWithNoChanges = Object.entries(componentStates).filter(
+      ([, cs]) => cs.changeRole === 'modify' &&
+        cs.executorResult?.status === 'completed_no_changes'
+    );
+    if (modifiedWithNoChanges.length > 0) {
+      return 'NEEDS_FIXES';
+    }
   }
 
   // If tests are not run but diffs exist, that's NEEDS_FIXES (not APPROVED_WITH_NOTES)

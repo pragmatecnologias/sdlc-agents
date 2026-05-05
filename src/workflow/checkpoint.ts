@@ -107,7 +107,7 @@ export async function listCheckpoints(
       }
     }
 
-    return checkpoints.sort((a, b) => a.name.localeCompare(b.name));
+    return checkpoints.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   } catch {
     return [];
   }
@@ -164,9 +164,10 @@ export async function saveArtifact(
   state: WorkspaceState,
   name: string,
   content: string,
-  baseDir: string = '.sea'
+  baseDir?: string
 ): Promise<void> {
-  const paths = getRunPaths(state.runId, baseDir);
+  const resolvedBaseDir = baseDir || state.baseDir || '.sea';
+  const paths = getRunPaths(state.runId, resolvedBaseDir);
   const artifactPath = path.join(paths.artifactsDir, name);
   await fs.mkdir(paths.artifactsDir, { recursive: true });
   await fs.writeFile(artifactPath, content, 'utf-8');
