@@ -329,6 +329,14 @@ export function getNextActionForComponent(state: WorkspaceState, componentName: 
 }
 
 /**
+ * Format a NextAction command string by replacing the <workspace> placeholder.
+ */
+export function formatNextActionCommand(action: NextAction, workspacePath: string): string | undefined {
+  if (!action.command) return undefined;
+  return action.command.replace('<workspace>', workspacePath);
+}
+
+/**
  * Build a summary of missing evidence for the run
  */
 export function getMissingEvidence(state: WorkspaceState): string[] {

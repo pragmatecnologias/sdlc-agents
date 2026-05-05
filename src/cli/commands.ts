@@ -51,7 +51,11 @@ export function registerCommands(program: Command): void {
   program
     .name('sea')
     .description('SEA - Software Engineering Agents Control Plane')
-    .version('0.1.0');
+    .version('0.1.0')
+    .action(async () => {
+      // No subcommand provided — open interactive mode
+      await handleInteractive();
+    });
 
   // init command
   program
@@ -1397,7 +1401,7 @@ async function handleNext(runId: string, workspacePath?: string, asJson?: boolea
   const nextAction = determineNextAction(state);
 
   if (asJson) {
-    console.log(renderNextActionJson(nextAction));
+    console.log(renderNextActionJson(nextAction, workspacePath));
   } else {
     renderNextAction(nextAction, workspacePath);
   }

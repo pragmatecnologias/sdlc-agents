@@ -137,6 +137,39 @@ When viewing a run's status, the interactive UI shows available actions based on
 | SHOW_REPORT | Show report |
 | FIX_BLOCKER | Show blockers |
 
+### Open Execution Request
+
+When you select "Open execution request for {component}":
+
+1. SEA reads and displays the full execution request content
+2. Shows the file path and after-execution command
+3. Asks if you want to open the file in `$EDITOR`
+4. When done, run: `sea after-execution <run-id> -c <component> -w <workspace>`
+
+### Run Verification
+
+When you select "Run verification":
+
+1. SEA shows a **preview** of components and their configured commands
+2. Prompts for confirmation before running
+3. Runs `sea verify` for all verifiable components
+4. After completion, shows a **summary** with pass/fail per component
+5. Shows the next recommended action
+
+### Inspect Artifact
+
+When you select "Inspect artifact for {component}":
+
+1. SEA shows a **preview** with:
+   - Component name
+   - Artifact type
+   - Output path / glob pattern
+   - Required entries to check
+2. Prompts for confirmation before running
+3. Runs `sea inspect-artifact` for the component
+4. After completion, shows inspection status and report path
+5. Shows the next recommended action
+
 ## Workflow Progression
 
 The interactive UI guides you through the workflow:
@@ -178,6 +211,8 @@ sea validate-workspace -w .sea/workspace.json --json
 # Get report as JSON
 sea report <run-id> -w .sea/workspace.json --json
 ```
+
+JSON output includes the actual workspace path (not a placeholder) in all command fields.
 
 ## Workspace Auto-Detection
 

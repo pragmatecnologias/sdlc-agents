@@ -1935,12 +1935,9 @@ src/
   executors/
     ExecutorAdapter.ts
     ManualExecutor.ts
-    CopilotExecutor.ts
-    ClaudeCodeExecutor.ts
-    CodexExecutor.ts
-    OpenClawExecutor.ts
-    ShellExecutor.ts
     MockExecutor.ts
+    # The following executor adapters are defined by this spec but not yet implemented:
+    # CopilotExecutor.ts, ClaudeCodeExecutor.ts, CodexExecutor.ts, OpenClawExecutor.ts, ShellExecutor.ts
 
   tools/
     gitTool.ts

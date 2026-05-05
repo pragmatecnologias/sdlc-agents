@@ -1,6 +1,7 @@
 /**
  * Executor Adapter Interface for SEA
- * Defines the contract for all executors (Manual, Copilot, Claude Code, etc.)
+ * Defines the contract for all executors.
+ * Currently implemented: manual, mock (test double).
  */
 
 import { z } from 'zod';
@@ -12,7 +13,7 @@ export type ExecutorResult = z.infer<typeof ExecutorResultSchema>;
 
 /**
  * Executor adapter interface
- * All executors (Manual, Copilot, Claude Code, etc.) must implement this interface
+ * All executors must implement this interface.
  */
 export interface ExecutorAdapter {
   /**

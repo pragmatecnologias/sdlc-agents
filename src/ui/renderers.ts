@@ -5,7 +5,7 @@
  * Each renderer is pure and returns a string (or void for side-effects).
  */
 
-import { NextAction, determineNextAction, getMissingEvidence } from '../services/nextActionService.js';
+import { NextAction, determineNextAction, getMissingEvidence, formatNextActionCommand } from '../services/nextActionService.js';
 import { RunSummary } from '../services/workspaceService.js';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { WorkspaceValidationResult } from '../tools/workspaceValidator.js';
@@ -126,8 +126,9 @@ export function renderRunBoard(display: StatusDisplay, workspacePath: string): v
   console.log('\nNext Recommended Action');
   console.log(`  ${display.nextAction.reason}`);
   if (display.nextAction.command) {
+    const cmd = formatNextActionCommand(display.nextAction, workspacePath);
     console.log(`\n  Command:`);
-    console.log(`    ${display.nextAction.command.replace('<workspace>', workspacePath)}`);
+    console.log(`    ${cmd}`);
   }
   if (display.nextAction.component) {
     console.log(`  Component: ${display.nextAction.component}`);
@@ -159,7 +160,12 @@ export function renderStatusJson(display: StatusDisplay, workspacePath: string):
     })),
     missingEvidence: display.missingEvidence,
     blockers: display.blockers,
-    nextAction: display.nextAction,
+    nextAction: {
+      ...display.nextAction,
+      command: display.nextAction.command
+        ? formatNextActionCommand(display.nextAction, workspacePath)
+        : undefined,
+    },
   }, null, 2);
 }
 
@@ -184,7 +190,7 @@ export function renderNextAction(action: NextAction, workspacePath: string): voi
   }
 
   if (action.command) {
-    const cmd = action.command.replace('<workspace>', workspacePath);
+    const cmd = formatNextActionCommand(action, workspacePath);
     console.log(`\n  Command:`);
     console.log(`    ${cmd}`);
   }
@@ -192,8 +198,12 @@ export function renderNextAction(action: NextAction, workspacePath: string): voi
   console.log(`\n  Can run interactively: ${action.canRunInteractively ? 'Yes' : 'No'}`);
 }
 
-export function renderNextActionJson(action: NextAction): string {
-  return JSON.stringify(action, null, 2);
+export function renderNextActionJson(action: NextAction, workspacePath?: string): string {
+  const output: Record<string, unknown> = { ...action };
+  if (action.command && workspacePath) {
+    output.command = formatNextActionCommand(action, workspacePath);
+  }
+  return JSON.stringify(output, null, 2);
 }
 
 // ============================================================================

@@ -9,6 +9,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import { spawn } from 'child_process';
 import {
   input,
@@ -23,7 +24,7 @@ import {
   listRecentRuns,
   getRunState,
 } from '../services/workspaceService.js';
-import { determineNextAction, NextAction, getMissingEvidence } from '../services/nextActionService.js';
+import { determineNextAction, NextAction, getMissingEvidence, formatNextActionCommand } from '../services/nextActionService.js';
 import {
   renderRunBoard,
   renderRecentRuns,
@@ -187,7 +188,7 @@ async function handleStartRun(workspacePath: string): Promise<void> {
       const nextAction = determineNextAction(state);
       console.log('\n   Next:', nextAction.reason);
       if (nextAction.command) {
-        console.log(`   ${nextAction.command.replace('<workspace>', workspacePath)}`);
+        console.log(`   ${formatNextActionCommand(nextAction, workspacePath)}`);
       }
     }
   }
@@ -432,8 +433,23 @@ async function handleOpenRequest(runId: string, component: string, workspacePath
 
   const requestPath = path.join(stateResult.runDir, 'components', component, 'execution-request.md');
 
-  console.log(`\n📄 Execution request: ${requestPath}`);
-  console.log(`\nWhen done, run:`);
+  // Read and display the execution request content
+  let requestContent: string;
+  try {
+    requestContent = await fs.readFile(requestPath, 'utf-8');
+  } catch {
+    console.log(`\n❌ Execution request file not found at: ${requestPath}`);
+    return;
+  }
+
+  printBanner(`Execution Request: ${component}`);
+  console.log(`  Run: ${runId}`);
+  console.log(`  File: ${requestPath}\n`);
+
+  console.log(requestContent);
+
+  printDivider();
+  console.log(`\nWhen done, capture evidence with:`);
   console.log(`  sea after-execution ${runId} -c ${component} -w ${workspacePath}`);
 
   const useEditor = process.env.EDITOR ? await confirm({ message: 'Open in $EDITOR?' }) : false;
@@ -468,6 +484,48 @@ async function handleCaptureEvidence(runId: string, component: string, workspace
 }
 
 async function handleRunVerification(runId: string, workspacePath: string): Promise<void> {
+  const stateResult = await getRunState(runId, workspacePath);
+  if (!stateResult) {
+    console.log(`\n❌ Run ${runId} not found.`);
+    return;
+  }
+
+  const state = stateResult.state as unknown as WorkspaceState;
+
+  // Show preview of components and commands that will be verified
+  const VERIFIABLE_ROLES = new Set(['modify', 'verify_only', 'package_only', 'artifact_verify']);
+  const componentsToVerify = Object.entries(state.componentStates)
+    .filter(([, cs]) => VERIFIABLE_ROLES.has(cs.changeRole));
+
+  if (componentsToVerify.length === 0) {
+    console.log('\n  No components require verification.');
+    return;
+  }
+
+  console.log('\n--- Verification Preview ---\n');
+  console.log(`Components to verify: ${componentsToVerify.length}\n`);
+
+  for (const [name, cs] of componentsToVerify) {
+    const component = state.workspace.components?.find(c => c.name === name);
+    const commands = component?.commands;
+    console.log(`  ${name}:`);
+    if (commands) {
+      if (commands.test) console.log(`    test:     ${commands.test}`);
+      if (commands.build) console.log(`    build:    ${commands.build}`);
+      if (commands.lint) console.log(`    lint:     ${commands.lint}`);
+      if (commands.typecheck) console.log(`    typecheck: ${commands.typecheck}`);
+      if (commands.e2e) console.log(`    e2e:      ${commands.e2e}`);
+      if (commands.smoke) console.log(`    smoke:    ${commands.smoke}`);
+    }
+    console.log();
+  }
+
+  const proceed = await confirm({ message: 'Run verification now?' });
+  if (!proceed) {
+    console.log('  Verification cancelled.');
+    return;
+  }
+
   console.log('\n🔄 Running verification...');
 
   try {
@@ -477,11 +535,79 @@ async function handleRunVerification(runId: string, workspacePath: string): Prom
     return;
   }
 
-  console.log('\n✅ Verification complete.');
-  console.log(`   Run \`sea status ${runId}\` to see results.`);
+  // Show summary after completion
+  const postResult = await getRunState(runId, workspacePath);
+  if (postResult) {
+    const postState = postResult.state as unknown as WorkspaceState;
+    if (postState.verification) {
+      const v = postState.verification;
+      console.log(`\n--- Verification Summary ---`);
+      console.log(`  Overall:      ${v.overallStatus}`);
+      console.log(`  Commands run: ${v.totalCommandsRun}`);
+      console.log(`  Passed:       ${v.totalPassed}`);
+      console.log(`  Failed:       ${v.totalFailed}`);
+
+      for (const [compName, compResult] of Object.entries(v.componentResults)) {
+        const icon = compResult.status === 'passed' ? '✅' : '❌';
+        console.log(`  ${icon} ${compName}: ${compResult.commandsRun} run, ${compResult.commandsFailed} failed`);
+      }
+
+      // Show next action
+      const nextAction = determineNextAction(postState);
+      console.log(`\n  Next: ${nextAction.reason}`);
+      if (nextAction.command) {
+        console.log(`  ${formatNextActionCommand(nextAction, workspacePath)}`);
+      }
+    }
+  } else {
+    console.log('\n✅ Verification complete.');
+  }
 }
 
 async function handleInspectArtifact(runId: string, component: string, workspacePath: string): Promise<void> {
+  const stateResult = await getRunState(runId, workspacePath);
+  if (!stateResult) {
+    console.log(`\n❌ Run ${runId} not found.`);
+    return;
+  }
+
+  const state = stateResult.state as unknown as WorkspaceState;
+  const componentConfig = state.workspace.components?.find(c => c.name === component);
+
+  if (!componentConfig) {
+    console.log(`\n❌ Component '${component}' not found in workspace.`);
+    return;
+  }
+
+  if (!componentConfig.artifact || componentConfig.artifact.type === 'none') {
+    console.log(`\n  Component '${component}' does not produce an artifact.`);
+    return;
+  }
+
+  // Show inspection preview
+  console.log('\n--- Artifact Inspection Preview ---\n');
+  console.log(`  Component:      ${component}`);
+  console.log(`  Artifact type:  ${componentConfig.artifact.type}`);
+  if (componentConfig.artifact.outputPath) {
+    console.log(`  Output path:    ${componentConfig.artifact.outputPath}`);
+  }
+  if (componentConfig.artifact.outputGlob) {
+    console.log(`  Output glob:    ${componentConfig.artifact.outputGlob}`);
+  }
+  if (componentConfig.artifact.requiredEntries && componentConfig.artifact.requiredEntries.length > 0) {
+    console.log(`  Required entries:`);
+    for (const entry of componentConfig.artifact.requiredEntries) {
+      console.log(`    - ${entry}`);
+    }
+  }
+  console.log();
+
+  const proceed = await confirm({ message: 'Run artifact inspection now?' });
+  if (!proceed) {
+    console.log('  Artifact inspection cancelled.');
+    return;
+  }
+
   console.log(`\n🔄 Inspecting artifact for ${component}...`);
 
   try {
@@ -491,7 +617,28 @@ async function handleInspectArtifact(runId: string, component: string, workspace
     return;
   }
 
-  console.log('\n✅ Artifact inspection complete.');
+  // Show status after inspection
+  const postResult = await getRunState(runId, workspacePath);
+  if (postResult) {
+    const postState = postResult.state as unknown as WorkspaceState;
+    const cs = postState.componentStates[component];
+    if (cs?.artifactInspection) {
+      const ai = cs.artifactInspection as { status: string; artifactType: string };
+      const icon = ai.status === 'passed' || ai.status === 'valid' ? '✅' : '❌';
+      console.log(`\n  ${icon} Artifact inspection: ${ai.status} (${ai.artifactType})`);
+    }
+    const runDir = postResult.runDir;
+    const reportPath = path.join(runDir, 'components', component, 'artifact-inspection.json');
+    console.log(`  Report: ${reportPath}`);
+
+    const nextAction = determineNextAction(postState);
+    console.log(`\n  Next: ${nextAction.reason}`);
+    if (nextAction.command) {
+      console.log(`  ${formatNextActionCommand(nextAction, workspacePath)}`);
+    }
+  } else {
+    console.log('\n✅ Artifact inspection complete.');
+  }
 }
 
 async function handleResume(runId: string, workspacePath: string): Promise<void> {

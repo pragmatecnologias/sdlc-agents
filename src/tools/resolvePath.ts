@@ -9,6 +9,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs';
 import { WorkspaceState } from '../state/workspaceState.js';
 import { ComponentConfig } from '../state/schemas.js';
 
@@ -59,14 +60,24 @@ export function resolveComponentPath(
 
 /**
  * Resolve the workspace root from WorkspaceState.
- * Falls back to process.cwd() if state.baseDir is not set.
+ *
+ * Uses state.baseDir (the .sea directory) to derive the workspace root.
+ * If baseDir is missing, falls back to process.cwd() only if
+ * .sea/workspace.json exists there — otherwise throws.
  */
 export function getWorkspaceRoot(state: WorkspaceState): string {
   if (state.baseDir) {
     // baseDir is the .sea directory; workspace root is its parent
     return path.resolve(state.baseDir, '..');
   }
-  return process.cwd();
+  // Fallback: use process.cwd() only if it looks like a valid workspace
+  if (fs.existsSync(path.join(process.cwd(), '.sea', 'workspace.json'))) {
+    return process.cwd();
+  }
+  throw new Error(
+    'Cannot resolve workspace root: state.baseDir is not set and no .sea/workspace.json found in cwd. ' +
+    'Ensure the run was created with a valid workspace path.'
+  );
 }
 
 /**
